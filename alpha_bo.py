@@ -1,0 +1,415 @@
+import ast
+from pathlib import Path
+
+import pandas as pd
+import torch
+from botorch.acquisition import LogExpectedImprovement
+from botorch.fit import fit_gpytorch_mll
+from botorch.models import SingleTaskGP
+from botorch.optim import optimize_acqf
+from botorch.utils.transforms import normalize, unnormalize, standardize
+from gpytorch.mlls import ExactMarginalLogLikelihood
+
+BASE_LOG_PATH = Path("brain_bo_log.csv")
+FIXED_REGION = "USA"
+FIXED_UNIVERSE = "TOP3000"
+FIXED_UNIT_HANDLING = "Verify"
+FIXED_TEST_YEARS = 1
+FIXED_TEST_MONTHS = 0
+
+
+def get_log_path(universe=FIXED_UNIVERSE):
+    """Return a separate CSV log path for each universe-specific BO campaign."""
+    if universe not in UNIVERSES:
+        raise ValueError(f"Unsupported universe: {universe}. Choose from {UNIVERSES}.")
+    return Path(f"brain_bo_{universe}.csv")
+
+SIGNAL_TYPES = ["momentum", "reversal", "volume", "volatility"]
+PRICE_FIELDS = ["close", "open", "high", "low", "vwap"]
+TRANSFORMS = ["rank", "zscore", "scale"]
+NEUTRALISATIONS = ["None", "Market", "Sector", "Industry", "Subindustry"]
+UNIVERSES = ["TOP3000", "TOP1000", "TOP500", "TOP200"]
+BOOLEAN_SETTINGS = ["Off", "On"]
+DELAYS = [0, 1]
+
+# Search dimensions:
+# x[0] = n, primary lookback window
+# x[1] = m, secondary / normalisation lookback window
+# x[2] = delay index: 0 Delay0, 1 Delay1
+# x[3] = decay setting
+# x[4] = truncation level
+# x[5] = signal_type index
+# x[6] = price field index
+# x[7] = transform index
+# x[8] = neutralisation index
+# x[9] = pasteurisation index: 0 Off, 1 On
+# x[10] = NaN handling index: 0 Off, 1 On
+# Region, universe, unit handling, and test period are fixed to keep scores comparable across trials.
+BOUNDS = torch.tensor([
+    [3.0, 3.0, 0.0, 1.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [120.0, 120.0, 1.0, 60.0, 0.20, 3.0, 4.0, 2.0, 4.0, 1.0, 1.0],
+])
+
+
+def canonicalise_params(params):
+    """Normalise old/new saved params into the current 11-parameter schema.
+
+    Current schema:
+    [n, m, delay, decay, truncation, signal_type, price_field, transform,
+     neutralisation, pasteurisation, nan_handling]
+
+    Region, universe, unit handling, and test period are intentionally fixed globally
+    so the BO objective is comparable across trials.
+    """
+    if isinstance(params, str):
+        params = ast.literal_eval(params)
+
+    # Old 3-parameter schema: [n, m, signal_type]
+    if len(params) == 3:
+        return [
+            int(params[0]), int(params[1]), 1, 1, 0.01,
+            str(params[2]), "close", "rank", "None", "On", "Off",
+        ]
+
+    # Previous 9-parameter schema:
+    # [n, m, decay, truncation, signal_type, price_field, transform,
+    #  neutralisation, universe]
+    if len(params) == 9:
+        neutralisation = str(params[7])
+        neutralisation = "None" if neutralisation.lower() == "none" else neutralisation.capitalize()
+
+        return [
+            int(params[0]), int(params[1]), 1, int(params[2]), float(params[3]),
+            str(params[4]), str(params[5]), str(params[6]),
+            neutralisation, "On", "Off",
+        ]
+
+    # Previous 13-parameter schema:
+    # [n, m, decay, truncation, signal_type, price_field, transform,
+    #  neutralisation, universe, pasteurisation, nan_handling,
+    #  test_years, test_months]
+    if len(params) == 13:
+        return [
+            int(params[0]), int(params[1]), 1, int(params[2]), float(params[3]),
+            str(params[4]), str(params[5]), str(params[6]), str(params[7]),
+            str(params[9]), str(params[10]),
+        ]
+
+    # Previous 10-parameter schema without delay.
+    if len(params) == 10:
+        return [
+            int(params[0]), int(params[1]), 1, int(params[2]), float(params[3]),
+            str(params[4]), str(params[5]), str(params[6]), str(params[7]),
+            str(params[8]), str(params[9]),
+        ]
+
+    # Current 11-parameter schema.
+    if len(params) == 11:
+        return [
+            int(params[0]), int(params[1]), int(params[2]), int(params[3]), float(params[4]),
+            str(params[5]), str(params[6]), str(params[7]), str(params[8]),
+            str(params[9]), str(params[10]),
+        ]
+
+    raise ValueError(f"Unsupported params format with length {len(params)}: {params}")
+
+
+def decode_params(x):
+    """Convert a continuous BoTorch candidate into valid alpha parameters."""
+    n = int(round(float(x[0])))
+    m = int(round(float(x[1])))
+    delay_idx = int(round(float(x[2])))
+    decay = int(round(float(x[3])))
+    truncation = round(float(x[4]), 4)
+
+    signal_idx = int(round(float(x[5])))
+    field_idx = int(round(float(x[6])))
+    transform_idx = int(round(float(x[7])))
+    neutralisation_idx = int(round(float(x[8])))
+    pasteurisation_idx = int(round(float(x[9])))
+    nan_handling_idx = int(round(float(x[10])))
+
+    n = min(max(n, 3), 120)
+    m = min(max(m, 3), 120)
+    decay = min(max(decay, 1), 60)
+    truncation = min(max(truncation, 0.001), 0.20)
+    delay_idx = min(max(delay_idx, 0), len(DELAYS) - 1)
+
+    signal_idx = min(max(signal_idx, 0), len(SIGNAL_TYPES) - 1)
+    field_idx = min(max(field_idx, 0), len(PRICE_FIELDS) - 1)
+    transform_idx = min(max(transform_idx, 0), len(TRANSFORMS) - 1)
+    neutralisation_idx = min(max(neutralisation_idx, 0), len(NEUTRALISATIONS) - 1)
+    pasteurisation_idx = min(max(pasteurisation_idx, 0), len(BOOLEAN_SETTINGS) - 1)
+    nan_handling_idx = min(max(nan_handling_idx, 0), len(BOOLEAN_SETTINGS) - 1)
+
+    return [
+        n, m, DELAYS[delay_idx], decay, truncation,
+        SIGNAL_TYPES[signal_idx],
+        PRICE_FIELDS[field_idx],
+        TRANSFORMS[transform_idx],
+        NEUTRALISATIONS[neutralisation_idx],
+        BOOLEAN_SETTINGS[pasteurisation_idx],
+        BOOLEAN_SETTINGS[nan_handling_idx],
+    ]
+
+
+def encode_params(params):
+    """Convert stored alpha parameters into numerical BO coordinates."""
+    (
+        n, m, delay, decay, truncation, signal_type, price_field, transform,
+        neutralisation, pasteurisation, nan_handling,
+    ) = canonicalise_params(params)
+
+    return [
+        float(n),
+        float(m),
+        float(DELAYS.index(delay)),
+        float(decay),
+        float(truncation),
+        float(SIGNAL_TYPES.index(signal_type)),
+        float(PRICE_FIELDS.index(price_field)),
+        float(TRANSFORMS.index(transform)),
+        float(NEUTRALISATIONS.index(neutralisation)),
+        float(BOOLEAN_SETTINGS.index(pasteurisation)),
+        float(BOOLEAN_SETTINGS.index(nan_handling)),
+    ]
+
+
+def apply_transform(expression, transform):
+    if transform == "rank":
+        return f"rank({expression})"
+    if transform == "zscore":
+        return f"zscore({expression})"
+    if transform == "scale":
+        return f"scale({expression})"
+    raise ValueError(f"Unknown transform: {transform}")
+
+
+def make_alpha(params, universe=FIXED_UNIVERSE):
+    (
+        n, m, delay, decay, truncation, signal_type, price_field, transform,
+        neutralisation, pasteurisation, nan_handling,
+    ) = canonicalise_params(params)
+
+    if signal_type == "momentum":
+        base_expression = f"ts_delta({price_field}, {n}) / ts_std_dev({price_field}, {m})"
+    elif signal_type == "reversal":
+        base_expression = f"-ts_delta({price_field}, {n}) / ts_std_dev({price_field}, {m})"
+    elif signal_type == "volume":
+        base_expression = f"ts_mean(volume, {n}) / ts_mean(volume, {m})"
+    elif signal_type == "volatility":
+        base_expression = f"-ts_std_dev({price_field}, {n})"
+    else:
+        raise ValueError(f"Unknown signal_type: {signal_type}")
+
+    transformed_expression = apply_transform(base_expression, transform)
+
+    alpha = transformed_expression
+
+    settings = (
+        f"Region={FIXED_REGION}, "
+        f"Universe={universe}, "
+        f"Delay={delay}, "
+        f"Neutralisation={neutralisation}, "
+        f"Decay={decay}, "
+        f"Truncation={truncation}, "
+        f"Pasteurisation={pasteurisation}, "
+        f"Unit handling={FIXED_UNIT_HANDLING}, "
+        f"NaN handling={nan_handling}, "
+        f"Test period={FIXED_TEST_YEARS}y {FIXED_TEST_MONTHS}m"
+    )
+
+    return alpha, settings
+
+
+def compute_score(fitness, sharpe, turnover, passed):
+    score = fitness + 0.5 * sharpe - 0.2 * turnover
+    if not passed:
+        score -= 2
+    return score
+
+
+def load_existing_results(log_path=None, universe=FIXED_UNIVERSE):
+    """Load all completed trials from CSV and convert them into BoTorch training data."""
+    if log_path is None:
+        log_path = get_log_path(universe)
+
+    if not log_path.exists():
+        return [], None, None
+
+    df = pd.read_csv(log_path)
+    if df.empty:
+        return [], None, None
+
+    existing_results = df.to_dict("records")
+    train_x = []
+    train_y = []
+
+    for _, row in df.iterrows():
+        params = canonicalise_params(row["params"])
+        score = float(row["score"])
+        train_x.append(encode_params(params))
+        train_y.append([score])
+
+    train_x = torch.tensor(train_x) if train_x else None
+    train_y = torch.tensor(train_y) if train_y else None
+
+    return existing_results, train_x, train_y
+
+
+def append_result_to_csv(result, log_path=None, universe=FIXED_UNIVERSE):
+    """Append one completed result immediately, so progress survives kernel stops."""
+    if log_path is None:
+        log_path = get_log_path(universe)
+
+    result_df = pd.DataFrame([result])
+
+    if log_path.exists() and log_path.stat().st_size > 0:
+        result_df.to_csv(log_path, mode="a", header=False, index=False)
+    else:
+        result_df.to_csv(log_path, index=False)
+
+
+def ask_float(prompt):
+    """Ask for a float. Empty input cleanly cancels the current trial instead of crashing."""
+    while True:
+        value = input(prompt).strip()
+        if value == "":
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            print("Please enter a number, or press Enter to cancel this trial.")
+
+
+def ask_bool(prompt):
+    """Ask for a yes/no value. Empty input cleanly cancels the current trial."""
+    while True:
+        value = input(prompt).strip().lower()
+        if value == "":
+            return None
+        if value in {"y", "yes", "true", "1"}:
+            return True
+        if value in {"n", "no", "false", "0"}:
+            return False
+        print("Please enter y/n, or press Enter to cancel this trial.")
+
+
+def ask_user_for_metrics(params, universe=FIXED_UNIVERSE):
+    alpha, settings = make_alpha(params, universe=universe)
+
+    print("\nSubmit this alpha manually on BRAIN:")
+    print(alpha)
+    print("\nSuggested settings:")
+    print(settings)
+    print("\nAfter the simulation finishes, enter the metrics below.")
+    print("Press Enter on an empty prompt to cancel without saving this trial.")
+
+    fitness = ask_float("Fitness: ")
+    if fitness is None:
+        return None
+
+    sharpe = ask_float("Sharpe: ")
+    if sharpe is None:
+        return None
+
+    turnover = ask_float("Turnover: ")
+    if turnover is None:
+        return None
+
+    passed = ask_bool("Passed? y/n: ")
+    if passed is None:
+        return None
+
+    score = compute_score(fitness, sharpe, turnover, passed)
+    alpha, settings = make_alpha(params, universe=universe)
+
+    return {
+        "alpha": alpha,
+        "settings": settings,
+        "universe": universe,
+        "params": canonicalise_params(params),
+        "fitness": fitness,
+        "sharpe": sharpe,
+        "turnover": turnover,
+        "passed": passed,
+        "score": score,
+    }
+
+
+def suggest_random_candidate():
+    candidate = torch.empty(11)
+    candidate[0] = torch.randint(3, 121, size=(1,)).item()
+    candidate[1] = torch.randint(3, 121, size=(1,)).item()
+    candidate[2] = torch.randint(0, len(DELAYS), size=(1,)).item()
+    candidate[3] = torch.randint(1, 61, size=(1,)).item()
+    candidate[4] = torch.empty(1).uniform_(0.001, 0.20).item()
+    candidate[5] = torch.randint(0, len(SIGNAL_TYPES), size=(1,)).item()
+    candidate[6] = torch.randint(0, len(PRICE_FIELDS), size=(1,)).item()
+    candidate[7] = torch.randint(0, len(TRANSFORMS), size=(1,)).item()
+    candidate[8] = torch.randint(0, len(NEUTRALISATIONS), size=(1,)).item()
+    candidate[9] = torch.randint(0, len(BOOLEAN_SETTINGS), size=(1,)).item()
+    candidate[10] = torch.randint(0, len(BOOLEAN_SETTINGS), size=(1,)).item()
+    return candidate
+
+
+def suggest_botorch_candidate(train_x, train_y):
+    """Fit a GP model and suggest the next candidate using LogEI."""
+    train_x_norm = normalize(train_x, BOUNDS)
+    train_y_std = standardize(train_y)
+
+    model = SingleTaskGP(train_x_norm, train_y_std)
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    fit_gpytorch_mll(mll)
+
+    best_f = train_y_std.max()
+    acqf = LogExpectedImprovement(model=model, best_f=best_f)
+
+    candidate_norm, _ = optimize_acqf(
+        acq_function=acqf,
+        bounds=torch.stack([torch.zeros(11), torch.ones(11)]),
+        q=1,
+        num_restarts=10,
+        raw_samples=128,
+    )
+
+    candidate = unnormalize(candidate_norm.detach().squeeze(0), BOUNDS)
+    return candidate
+
+
+def run_one_trial(universe=FIXED_UNIVERSE, seed_threshold=50):
+    """Run one suggest → manual simulate → save cycle.
+
+    Re-run this function anytime. Completed trials are appended to CSV immediately,
+    and the CSV is reloaded automatically at the start of each call.
+
+    Use different `universe` values to maintain separate BO campaigns, e.g.
+    run_one_trial(universe="TOP3000") or run_one_trial(universe="TOP1000").
+    """
+    if universe not in UNIVERSES:
+        raise ValueError(f"Unsupported universe: {universe}. Choose from {UNIVERSES}.")
+
+    log_path = get_log_path(universe)
+
+    results, train_x, train_y = load_existing_results(log_path=log_path, universe=universe)
+
+    n_existing = 0 if train_x is None else train_x.shape[0]
+    print(f"Loaded {n_existing} existing completed trials from {log_path}.")
+
+    if train_x is None or train_x.shape[0] < seed_threshold:
+        raw_candidate = suggest_random_candidate()
+        print(f"Using random candidate because fewer than {seed_threshold} trials are available.")
+    else:
+        raw_candidate = suggest_botorch_candidate(train_x, train_y)
+        print("Using BoTorch LogExpectedImprovement candidate.")
+
+    params = decode_params(raw_candidate)
+    new_result = ask_user_for_metrics(params, universe=universe)
+
+    if new_result is None:
+        print("Trial cancelled. Nothing was saved.")
+        return None
+
+    append_result_to_csv(new_result, log_path=log_path, universe=universe)
+    print(f"Saved completed trial to {log_path}.")
+    return new_result
