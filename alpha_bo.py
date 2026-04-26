@@ -10,7 +10,6 @@ from botorch.optim import optimize_acqf
 from botorch.utils.transforms import normalize, unnormalize, standardize
 from gpytorch.mlls import ExactMarginalLogLikelihood
 
-BASE_LOG_PATH = Path("brain_bo_log.csv")
 FIXED_REGION = "USA"
 FIXED_UNIVERSE = "TOP3000"
 FIXED_UNIT_HANDLING = "Verify"
@@ -18,19 +17,36 @@ FIXED_TEST_YEARS = 1
 FIXED_TEST_MONTHS = 0
 
 
-def get_log_path(universe=FIXED_UNIVERSE):
-    """Return a separate CSV log path for each universe-specific BO campaign."""
+def normalise_user_name(user):
+    """Convert a user name into a safe lowercase filename component."""
+    cleaned = str(user).strip().lower().replace(" ", "_")
+    cleaned = "".join(ch for ch in cleaned if ch.isalnum() or ch == "_")
+
+    if not cleaned:
+        raise ValueError("User name must contain at least one letter or number.")
+
+    return cleaned
+
+
+def get_log_path(user, universe=FIXED_UNIVERSE, region=FIXED_REGION):
+    """Return a separate CSV log path for each user/region/universe campaign."""
     if universe not in UNIVERSES:
         raise ValueError(f"Unsupported universe: {universe}. Choose from {UNIVERSES}.")
-    return Path(f"brain_bo_{universe}.csv")
 
+    user_slug = normalise_user_name(user)
+    region_slug = str(region).strip().lower()
+    universe_slug = str(universe).strip().lower()
+
+    return Path(f"brain_bo_{region_slug}_{universe_slug}_{user_slug}.csv")
+
+UNIVERSES = ["TOP3000", "TOP1000", "TOP500", "TOP200"]
 SIGNAL_TYPES = ["momentum", "reversal", "volume", "volatility"]
 PRICE_FIELDS = ["close", "open", "high", "low", "vwap"]
 TRANSFORMS = ["rank", "zscore", "scale"]
 NEUTRALISATIONS = ["None", "Market", "Sector", "Industry", "Subindustry"]
-UNIVERSES = ["TOP3000", "TOP1000", "TOP500", "TOP200"]
 BOOLEAN_SETTINGS = ["Off", "On"]
 DELAYS = [0, 1]
+torch.set_default_dtype(torch.double)
 
 # Search dimensions:
 # x[0] = n, primary lookback window
@@ -229,10 +245,10 @@ def compute_score(fitness, sharpe, turnover, passed):
     return score
 
 
-def load_existing_results(log_path=None, universe=FIXED_UNIVERSE):
+def load_existing_results(user, log_path=None, universe=FIXED_UNIVERSE, region=FIXED_REGION):
     """Load all completed trials from CSV and convert them into BoTorch training data."""
     if log_path is None:
-        log_path = get_log_path(universe)
+        log_path = get_log_path(user=user, universe=universe, region=region)
 
     if not log_path.exists():
         return [], None, None
@@ -257,10 +273,10 @@ def load_existing_results(log_path=None, universe=FIXED_UNIVERSE):
     return existing_results, train_x, train_y
 
 
-def append_result_to_csv(result, log_path=None, universe=FIXED_UNIVERSE):
+def append_result_to_csv(result, user, log_path=None, universe=FIXED_UNIVERSE, region=FIXED_REGION):
     """Append one completed result immediately, so progress survives kernel stops."""
     if log_path is None:
-        log_path = get_log_path(universe)
+        log_path = get_log_path(user=user, universe=universe, region=region)
 
     result_df = pd.DataFrame([result])
 
@@ -295,7 +311,7 @@ def ask_bool(prompt):
         print("Please enter y/n, or press Enter to cancel this trial.")
 
 
-def ask_user_for_metrics(params, universe=FIXED_UNIVERSE):
+def ask_user_for_metrics(params, user, universe=FIXED_UNIVERSE):
     alpha, settings = make_alpha(params, universe=universe)
 
     print("\nSubmit this alpha manually on BRAIN:")
@@ -328,6 +344,7 @@ def ask_user_for_metrics(params, universe=FIXED_UNIVERSE):
         "alpha": alpha,
         "settings": settings,
         "universe": universe,
+        "user": normalise_user_name(user),
         "params": canonicalise_params(params),
         "fitness": fitness,
         "sharpe": sharpe,
@@ -377,21 +394,24 @@ def suggest_botorch_candidate(train_x, train_y):
     return candidate
 
 
-def run_one_trial(universe=FIXED_UNIVERSE, seed_threshold=50):
+def run_one_trial(user, universe=FIXED_UNIVERSE, seed_threshold=50):
     """Run one suggest → manual simulate → save cycle.
 
     Re-run this function anytime. Completed trials are appended to CSV immediately,
     and the CSV is reloaded automatically at the start of each call.
 
-    Use different `universe` values to maintain separate BO campaigns, e.g.
-    run_one_trial(universe="TOP3000") or run_one_trial(universe="TOP1000").
+    Use different `user` and `universe` values to maintain separate BO campaigns, e.g.
+    run_one_trial(user="Angze", universe="TOP3000")
+    or run_one_trial(user="Devan", universe="TOP1000").
     """
     if universe not in UNIVERSES:
         raise ValueError(f"Unsupported universe: {universe}. Choose from {UNIVERSES}.")
 
-    log_path = get_log_path(universe)
+    user_slug = normalise_user_name(user)
 
-    results, train_x, train_y = load_existing_results(log_path=log_path, universe=universe)
+    log_path = get_log_path(user=user_slug, universe=universe, region=FIXED_REGION)
+
+    results, train_x, train_y = load_existing_results(user=user_slug, log_path=log_path, universe=universe)
 
     n_existing = 0 if train_x is None else train_x.shape[0]
     print(f"Loaded {n_existing} existing completed trials from {log_path}.")
@@ -404,12 +424,12 @@ def run_one_trial(universe=FIXED_UNIVERSE, seed_threshold=50):
         print("Using BoTorch LogExpectedImprovement candidate.")
 
     params = decode_params(raw_candidate)
-    new_result = ask_user_for_metrics(params, universe=universe)
+    new_result = ask_user_for_metrics(params, user=user_slug, universe=universe)
 
     if new_result is None:
         print("Trial cancelled. Nothing was saved.")
         return None
 
-    append_result_to_csv(new_result, log_path=log_path, universe=universe)
+    append_result_to_csv(new_result, user=user_slug, log_path=log_path, universe=universe)
     print(f"Saved completed trial to {log_path}.")
     return new_result
