@@ -1,8 +1,6 @@
-# GitHub Terminal Workflow
+# 💾 GitHub Terminal Workflow
 
 This is the practical Git/GitHub workflow for the `brain-bo-alpha-lab` project.
-
-It is written for teammates who may not have used Git or the terminal before.
 
 ---
 
