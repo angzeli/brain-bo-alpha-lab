@@ -31,14 +31,16 @@ The workflow is deliberately **human-in-the-loop**:
 
 ```python
 brain-bo-alpha-lab/
-├── README.md
-├── alpha_bo.py
-├── alpha.ipynb
 ├── docs/
 │   ├── github_terminal_workflow.md
 │   └── quick_start.md 
+├── .gitignore
+├── alpha_bo.py
+├── alpha.ipynb
+├── csv_combiner.py
+├── combine_csv.ipynb
 ├── LICENSE
-└── .gitignore
+└── README.md
 ```
 
 ---

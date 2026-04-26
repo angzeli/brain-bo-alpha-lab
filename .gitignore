@@ -35,9 +35,11 @@ htmlcov/
 # Logs and local experiment outputs
 *.log
 
-# WorldQuant / BO experiment logs
+# WorldQuant / BO experiment logs and generated data-pool snapshots
 brain_bo_*.csv
 brain_bo_log.csv
+combined_brain_bo_*.csv
+top_trials_*.csv
 
 # Optional generated outputs
 outputs/
