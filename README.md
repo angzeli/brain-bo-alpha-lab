@@ -134,3 +134,11 @@ Current priorities:
 - improve handling of categorical variables,
 - add more alpha expression templates,
 - and compare BO-guided search against random/manual baselines.
+
+---
+
+## 👥Author
+
+**Angze Li** 🦑
+
+Imperial College London
