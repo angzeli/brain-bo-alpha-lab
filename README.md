@@ -67,8 +67,8 @@ new_result = run_one_trial(user="Angze", universe="TOP3000")
 This will:
 
 1. load the existing CSV log for the selected user and universe,
-2. suggest one candidate alpha and BRAIN setting,
-3. ask the user to enter the resulting BRAIN metrics,
+2. suggest one candidate alpha with BRAIN-ready name, category, description, and settings,
+3. ask the user to enter the resulting Aggregate Data metrics,
 4. append the completed result to the correct CSV file.
 
 Each user/universe pair has its own independent log file. For example:
@@ -88,7 +88,6 @@ The optimiser currently searches over:
 [
     n,                 # primary lookback window
     m,                 # secondary / normalisation lookback window
-    delay,             # Delay0 or Delay1
     decay,             # BRAIN decay setting
     truncation,        # maximum single-stock weight
     signal_type,       # momentum / reversal / volume / volatility
@@ -100,7 +99,7 @@ The optimiser currently searches over:
 ]
 ```
 
-The region is currently fixed to `USA`, and each universe is treated as a separate campaign.
+The region is currently fixed to `USA`, Delay is currently fixed to `1`, and each universe is treated as a separate campaign.
 
 ---
 

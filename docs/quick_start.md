@@ -5,7 +5,7 @@ You do not need to understand Bayesian optimisation before using this project.
 The workflow is:
 
 1. Run one Python command.
-2. Copy the suggested alpha expression and settings into WorldQuant BRAIN.
+2. Copy the suggested alpha name, category, description, expression, and settings into WorldQuant BRAIN.
 3. Run the simulation manually on BRAIN.
 4. Copy the resulting metrics back into Python.
 5. The result is saved automatically.
@@ -32,7 +32,16 @@ This creates or updates a personal CSV file such as:
 
 Python will print something like:
 
-    Submit this alpha manually on BRAIN:
+    Suggested alpha name:
+    mom_close_20_volnorm_60
+
+    Category:
+    price momentum
+
+    Description:
+    Uses a 20-day close price change normalised by 60-day close volatility, transformed with rank. ...
+
+    Alpha expression:
     rank(ts_delta(close, 20) / ts_std_dev(close, 60))
 
 It will also print the suggested settings, for example:
@@ -45,9 +54,12 @@ Copy these into BRAIN and run the simulation manually.
 
 After the BRAIN simulation finishes, Python will ask for:
 
-    Fitness:
     Sharpe:
-    Turnover:
+    Turnover (%):
+    Fitness:
+    Returns (%):
+    Drawdown (%):
+    Margin (‱):
     Passed? y/n:
 
 Copy these values from BRAIN.

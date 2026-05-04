@@ -16,6 +16,7 @@ FIXED_UNIVERSE = "TOP3000"
 FIXED_UNIT_HANDLING = "Verify"
 FIXED_TEST_YEARS = 1
 FIXED_TEST_MONTHS = 0
+FIXED_DELAY = 1
 
 UNIVERSES = ["TOP3000", "TOP1000", "TOP500", "TOP200"]
 SIGNAL_TYPES = ["momentum", "reversal", "volume", "volatility"]
@@ -23,22 +24,34 @@ PRICE_FIELDS = ["close", "open", "high", "low", "vwap"]
 TRANSFORMS = ["rank", "zscore", "scale"]
 NEUTRALISATIONS = ["None", "Market", "Sector", "Industry", "Subindustry"]
 BOOLEAN_SETTINGS = ["Off", "On"]
-DELAYS = [0, 1]
 
 CSV_COLUMN_ORDER = [
     "run_timestamp",
     "user",
-    "universe",
     "region",
+    "universe",
+    "alpha_name",
+    "alpha_category",
+    "alpha_description",
     "alpha",
     "settings",
     "params",
-    "fitness",
     "sharpe",
-    "turnover",
+    "turnover_pct",
+    "fitness",
+    "returns_pct",
+    "drawdown_pct",
+    "margin_permyriad",
     "passed",
     "score",
 ]
+
+ALPHA_CATEGORY_BY_SIGNAL = {
+    "momentum": "price momentum",
+    "reversal": "price reversion",
+    "volume": "volume",
+    "volatility": "price reversion",
+}
 
 
 def normalise_user_name(user):
@@ -81,31 +94,30 @@ torch.set_default_dtype(torch.double)
 # Search dimensions:
 # x[0] = n, primary lookback window
 # x[1] = m, secondary / normalisation lookback window
-# x[2] = delay index: 0 Delay0, 1 Delay1
-# x[3] = decay setting
-# x[4] = truncation level
-# x[5] = signal_type index
-# x[6] = price field index
-# x[7] = transform index
-# x[8] = neutralisation index
-# x[9] = pasteurisation index: 0 Off, 1 On
-# x[10] = NaN handling index: 0 Off, 1 On
-# Region, universe, unit handling, and test period are fixed to keep scores comparable across trials.
+# x[2] = decay setting
+# x[3] = truncation level
+# x[4] = signal_type index
+# x[5] = price field index
+# x[6] = transform index
+# x[7] = neutralisation index
+# x[8] = pasteurisation index: 0 Off, 1 On
+# x[9] = NaN handling index: 0 Off, 1 On
+# Region, universe, delay, unit handling, and test period are fixed to keep scores comparable across trials.
 BOUNDS = torch.tensor([
-    [3.0, 3.0, 0.0, 1.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    [120.0, 120.0, 1.0, 60.0, 0.20, 3.0, 4.0, 2.0, 4.0, 1.0, 1.0],
+    [3.0, 3.0, 1.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    [120.0, 120.0, 60.0, 0.20, 3.0, 4.0, 2.0, 4.0, 1.0, 1.0],
 ])
 
 
 def canonicalise_params(params):
-    """Normalise old/new saved params into the current 11-parameter schema.
+    """Normalise old/new saved params into the current 10-parameter schema.
 
     Current schema:
-    [n, m, delay, decay, truncation, signal_type, price_field, transform,
-     neutralisation, pasteurisation, nan_handling]
+    [n, m, decay, truncation, signal_type, price_field, transform, neutralisation,
+     pasteurisation, nan_handling]
 
-    Region, universe, unit handling, and test period are intentionally fixed globally
-    so the BO objective is comparable across trials.
+    Region, universe, delay, unit handling, and test period are intentionally fixed
+    outside the optimised params so the BO objective is comparable across trials.
     """
     if isinstance(params, str):
         params = ast.literal_eval(params)
@@ -113,7 +125,7 @@ def canonicalise_params(params):
     # Old 3-parameter schema: [n, m, signal_type]
     if len(params) == 3:
         return [
-            int(params[0]), int(params[1]), 1, 1, 0.01,
+            int(params[0]), int(params[1]), 1, 0.01,
             str(params[2]), "close", "rank", "None", "On", "Off",
         ]
 
@@ -125,7 +137,7 @@ def canonicalise_params(params):
         neutralisation = "None" if neutralisation.lower() == "none" else neutralisation.capitalize()
 
         return [
-            int(params[0]), int(params[1]), 1, int(params[2]), float(params[3]),
+            int(params[0]), int(params[1]), int(params[2]), float(params[3]),
             str(params[4]), str(params[5]), str(params[6]),
             neutralisation, "On", "Off",
         ]
@@ -136,23 +148,23 @@ def canonicalise_params(params):
     #  test_years, test_months]
     if len(params) == 13:
         return [
-            int(params[0]), int(params[1]), 1, int(params[2]), float(params[3]),
+            int(params[0]), int(params[1]), int(params[2]), float(params[3]),
             str(params[4]), str(params[5]), str(params[6]), str(params[7]),
             str(params[9]), str(params[10]),
         ]
 
-    # Previous 10-parameter schema without delay.
+    # Current 10-parameter schema without delay.
     if len(params) == 10:
         return [
-            int(params[0]), int(params[1]), 1, int(params[2]), float(params[3]),
+            int(params[0]), int(params[1]), int(params[2]), float(params[3]),
             str(params[4]), str(params[5]), str(params[6]), str(params[7]),
             str(params[8]), str(params[9]),
         ]
 
-    # Current 11-parameter schema.
+    # Previous 11-parameter schema with optimised delay. Drop saved delay and use FIXED_DELAY.
     if len(params) == 11:
         return [
-            int(params[0]), int(params[1]), int(params[2]), int(params[3]), float(params[4]),
+            int(params[0]), int(params[1]), int(params[3]), float(params[4]),
             str(params[5]), str(params[6]), str(params[7]), str(params[8]),
             str(params[9]), str(params[10]),
         ]
@@ -164,22 +176,20 @@ def decode_params(x):
     """Convert a continuous BoTorch candidate into valid alpha parameters."""
     n = int(round(float(x[0])))
     m = int(round(float(x[1])))
-    delay_idx = int(round(float(x[2])))
-    decay = int(round(float(x[3])))
-    truncation = round(float(x[4]), 4)
+    decay = int(round(float(x[2])))
+    truncation = round(float(x[3]), 4)
 
-    signal_idx = int(round(float(x[5])))
-    field_idx = int(round(float(x[6])))
-    transform_idx = int(round(float(x[7])))
-    neutralisation_idx = int(round(float(x[8])))
-    pasteurisation_idx = int(round(float(x[9])))
-    nan_handling_idx = int(round(float(x[10])))
+    signal_idx = int(round(float(x[4])))
+    field_idx = int(round(float(x[5])))
+    transform_idx = int(round(float(x[6])))
+    neutralisation_idx = int(round(float(x[7])))
+    pasteurisation_idx = int(round(float(x[8])))
+    nan_handling_idx = int(round(float(x[9])))
 
     n = min(max(n, 3), 120)
     m = min(max(m, 3), 120)
     decay = min(max(decay, 1), 60)
     truncation = min(max(truncation, 0.001), 0.20)
-    delay_idx = min(max(delay_idx, 0), len(DELAYS) - 1)
 
     signal_idx = min(max(signal_idx, 0), len(SIGNAL_TYPES) - 1)
     field_idx = min(max(field_idx, 0), len(PRICE_FIELDS) - 1)
@@ -189,7 +199,7 @@ def decode_params(x):
     nan_handling_idx = min(max(nan_handling_idx, 0), len(BOOLEAN_SETTINGS) - 1)
 
     return [
-        n, m, DELAYS[delay_idx], decay, truncation,
+        n, m, decay, truncation,
         SIGNAL_TYPES[signal_idx],
         PRICE_FIELDS[field_idx],
         TRANSFORMS[transform_idx],
@@ -202,14 +212,13 @@ def decode_params(x):
 def encode_params(params):
     """Convert stored alpha parameters into numerical BO coordinates."""
     (
-        n, m, delay, decay, truncation, signal_type, price_field, transform,
+        n, m, decay, truncation, signal_type, price_field, transform,
         neutralisation, pasteurisation, nan_handling,
     ) = canonicalise_params(params)
 
     return [
         float(n),
         float(m),
-        float(DELAYS.index(delay)),
         float(decay),
         float(truncation),
         float(SIGNAL_TYPES.index(signal_type)),
@@ -234,7 +243,7 @@ def apply_transform(expression, transform):
 def make_alpha(params, universe=FIXED_UNIVERSE):
     universe = normalise_universe(universe)
     (
-        n, m, delay, decay, truncation, signal_type, price_field, transform,
+        n, m, decay, truncation, signal_type, price_field, transform,
         neutralisation, pasteurisation, nan_handling,
     ) = canonicalise_params(params)
 
@@ -254,23 +263,56 @@ def make_alpha(params, universe=FIXED_UNIVERSE):
     alpha = transformed_expression
 
     settings = (
-        f"Region={FIXED_REGION}, "
-        f"Universe={universe}, "
-        f"Delay={delay}, "
-        f"Neutralisation={neutralisation}, "
-        f"Decay={decay}, "
-        f"Truncation={truncation}, "
-        f"Pasteurisation={pasteurisation}, "
-        f"Unit handling={FIXED_UNIT_HANDLING}, "
-        f"NaN handling={nan_handling}, "
-        f"Test period={FIXED_TEST_YEARS}y {FIXED_TEST_MONTHS}m"
+        f"Region={FIXED_REGION}, Universe={universe}, Delay={FIXED_DELAY}\n"
+        f"Neutralisation={neutralisation}, Decay={decay}, Truncation={truncation}\n\n"
+        f"Pasteurisation={pasteurisation}, Unit handling={FIXED_UNIT_HANDLING}\n"
+        f"NaN handling={nan_handling}, Test period={FIXED_TEST_YEARS}y {FIXED_TEST_MONTHS}m"
     )
 
     return alpha, settings
 
 
-def compute_score(fitness, sharpe, turnover, passed):
-    score = fitness + 0.5 * sharpe - 0.2 * turnover
+def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
+    """Build BRAIN-ready alpha name/category/description for a candidate."""
+    universe = normalise_universe(universe)
+    (
+        n, m, decay, truncation, signal_type, price_field, transform,
+        neutralisation, pasteurisation, nan_handling,
+    ) = canonicalise_params(params)
+
+    alpha_category = ALPHA_CATEGORY_BY_SIGNAL[signal_type]
+
+    if signal_type == "momentum":
+        alpha_name = f"mom_{price_field}_{n}_volnorm_{m}"
+        uses = f"Uses a {n}-day {price_field} price change normalised by {m}-day {price_field} volatility"
+    elif signal_type == "reversal":
+        alpha_name = f"rev_{price_field}_{n}_volnorm_{m}"
+        uses = f"Uses a negative {n}-day {price_field} price change normalised by {m}-day {price_field} volatility"
+    elif signal_type == "volume":
+        alpha_name = f"vol_surge_{n}_{m}_{transform}"
+        uses = f"Uses the ratio of {n}-day average volume to {m}-day average volume"
+    elif signal_type == "volatility":
+        alpha_name = f"low_vol_{price_field}_{n}_{transform}"
+        uses = f"Uses negative {n}-day {price_field} volatility"
+    else:
+        raise ValueError(f"Unknown signal_type: {signal_type}")
+
+    alpha_description = (
+        f"{uses}, transformed with {transform}. "
+        f"Tested with Delay{FIXED_DELAY}, {neutralisation} neutralisation, Decay {decay}, "
+        f"Truncation {truncation}, Pasteurisation {pasteurisation}, "
+        f"NaN handling {nan_handling}, Universe {universe}."
+    )
+
+    return {
+        "alpha_name": alpha_name,
+        "alpha_category": alpha_category,
+        "alpha_description": alpha_description,
+    }
+
+
+def compute_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, margin_permyriad, passed):
+    score = fitness + 0.5 * sharpe - 0.002 * turnover_pct
     if not passed:
         score -= 2
     return score
@@ -378,61 +420,94 @@ def ask_bool(prompt):
 def ask_user_for_metrics(params, user, universe=FIXED_UNIVERSE):
     universe = normalise_universe(universe)
     alpha, settings = make_alpha(params, universe=universe)
+    metadata = build_alpha_metadata(params, universe=universe)
 
-    print("\nSubmit this alpha manually on BRAIN:")
+    print("\nBO candidate")
+    print("-" * 50)
+    print("\nAlpha expression:")
     print(alpha)
     print("\nSuggested settings:")
     print(settings)
-    print("\nAfter the simulation finishes, enter the metrics below.")
+    print("")
+    print("Suggested alpha name:")
+    print(metadata["alpha_name"])
+    print("\nCategory:")
+    print(metadata["alpha_category"])
+    print("\nDescription:")
+    print(metadata["alpha_description"])
+    print("\nAfter the simulation finishes, enter the Aggregate Data metrics:")
     print("Press Enter on an empty prompt to cancel without saving this trial.")
-
-    fitness = ask_float("Fitness: ")
-    if fitness is None:
-        return None
 
     sharpe = ask_float("Sharpe: ")
     if sharpe is None:
         return None
 
-    turnover = ask_float("Turnover: ")
-    if turnover is None:
+    turnover_pct = ask_float("Turnover (%): ")
+    if turnover_pct is None:
+        return None
+
+    fitness = ask_float("Fitness: ")
+    if fitness is None:
+        return None
+
+    returns_pct = ask_float("Returns (%): ")
+    if returns_pct is None:
+        return None
+
+    drawdown_pct = ask_float("Drawdown (%): ")
+    if drawdown_pct is None:
+        return None
+
+    margin_permyriad = ask_float("Margin (‱): ")
+    if margin_permyriad is None:
         return None
 
     passed = ask_bool("Passed? y/n: ")
     if passed is None:
         return None
 
-    score = compute_score(fitness, sharpe, turnover, passed)
+    score = compute_score(
+        sharpe=sharpe,
+        turnover_pct=turnover_pct,
+        fitness=fitness,
+        returns_pct=returns_pct,
+        drawdown_pct=drawdown_pct,
+        margin_permyriad=margin_permyriad,
+        passed=passed,
+    )
     alpha, settings = make_alpha(params, universe=universe)
 
     return {
+        **metadata,
         "alpha": alpha,
         "settings": settings,
         "region": FIXED_REGION,
         "universe": universe,
         "user": normalise_user_name(user),
         "params": canonicalise_params(params),
-        "fitness": fitness,
         "sharpe": sharpe,
-        "turnover": turnover,
+        "turnover_pct": turnover_pct,
+        "fitness": fitness,
+        "returns_pct": returns_pct,
+        "drawdown_pct": drawdown_pct,
+        "margin_permyriad": margin_permyriad,
         "passed": passed,
         "score": score,
     }
 
 
 def suggest_random_candidate():
-    candidate = torch.empty(11)
+    candidate = torch.empty(10)
     candidate[0] = torch.randint(3, 121, size=(1,)).item()
     candidate[1] = torch.randint(3, 121, size=(1,)).item()
-    candidate[2] = torch.randint(0, len(DELAYS), size=(1,)).item()
-    candidate[3] = torch.randint(1, 61, size=(1,)).item()
-    candidate[4] = torch.empty(1).uniform_(0.001, 0.20).item()
-    candidate[5] = torch.randint(0, len(SIGNAL_TYPES), size=(1,)).item()
-    candidate[6] = torch.randint(0, len(PRICE_FIELDS), size=(1,)).item()
-    candidate[7] = torch.randint(0, len(TRANSFORMS), size=(1,)).item()
-    candidate[8] = torch.randint(0, len(NEUTRALISATIONS), size=(1,)).item()
+    candidate[2] = torch.randint(1, 61, size=(1,)).item()
+    candidate[3] = torch.empty(1).uniform_(0.001, 0.20).item()
+    candidate[4] = torch.randint(0, len(SIGNAL_TYPES), size=(1,)).item()
+    candidate[5] = torch.randint(0, len(PRICE_FIELDS), size=(1,)).item()
+    candidate[6] = torch.randint(0, len(TRANSFORMS), size=(1,)).item()
+    candidate[7] = torch.randint(0, len(NEUTRALISATIONS), size=(1,)).item()
+    candidate[8] = torch.randint(0, len(BOOLEAN_SETTINGS), size=(1,)).item()
     candidate[9] = torch.randint(0, len(BOOLEAN_SETTINGS), size=(1,)).item()
-    candidate[10] = torch.randint(0, len(BOOLEAN_SETTINGS), size=(1,)).item()
     return candidate
 
 
@@ -450,7 +525,7 @@ def suggest_botorch_candidate(train_x, train_y):
 
     candidate_norm, _ = optimize_acqf(
         acq_function=acqf,
-        bounds=torch.stack([torch.zeros(11), torch.ones(11)]),
+        bounds=torch.stack([torch.zeros(10), torch.ones(10)]),
         q=1,
         num_restarts=10,
         raw_samples=128,
