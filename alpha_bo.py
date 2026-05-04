@@ -1,4 +1,5 @@
 import ast
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -16,6 +17,29 @@ FIXED_UNIT_HANDLING = "Verify"
 FIXED_TEST_YEARS = 1
 FIXED_TEST_MONTHS = 0
 
+UNIVERSES = ["TOP3000", "TOP1000", "TOP500", "TOP200"]
+SIGNAL_TYPES = ["momentum", "reversal", "volume", "volatility"]
+PRICE_FIELDS = ["close", "open", "high", "low", "vwap"]
+TRANSFORMS = ["rank", "zscore", "scale"]
+NEUTRALISATIONS = ["None", "Market", "Sector", "Industry", "Subindustry"]
+BOOLEAN_SETTINGS = ["Off", "On"]
+DELAYS = [0, 1]
+
+CSV_COLUMN_ORDER = [
+    "run_timestamp",
+    "user",
+    "universe",
+    "region",
+    "alpha",
+    "settings",
+    "params",
+    "fitness",
+    "sharpe",
+    "turnover",
+    "passed",
+    "score",
+]
+
 
 def normalise_user_name(user):
     """Convert a user name into a safe lowercase filename component."""
@@ -28,24 +52,30 @@ def normalise_user_name(user):
     return cleaned
 
 
+def normalise_universe(universe):
+    """Return the canonical universe name, accepting case-insensitive input."""
+    cleaned = str(universe).strip().upper()
+    if cleaned not in UNIVERSES:
+        raise ValueError(f"Unsupported universe: {universe}. Choose from {UNIVERSES}.")
+    return cleaned
+
+
 def get_log_path(user, universe=FIXED_UNIVERSE, region=FIXED_REGION):
     """Return a separate CSV log path for each user/region/universe campaign."""
-    if universe not in UNIVERSES:
-        raise ValueError(f"Unsupported universe: {universe}. Choose from {UNIVERSES}.")
-
     user_slug = normalise_user_name(user)
     region_slug = str(region).strip().lower()
-    universe_slug = str(universe).strip().lower()
+    universe_slug = normalise_universe(universe).lower()
 
     return Path(f"brain_bo_{region_slug}_{universe_slug}_{user_slug}.csv")
 
-UNIVERSES = ["TOP3000", "TOP1000", "TOP500", "TOP200"]
-SIGNAL_TYPES = ["momentum", "reversal", "volume", "volatility"]
-PRICE_FIELDS = ["close", "open", "high", "low", "vwap"]
-TRANSFORMS = ["rank", "zscore", "scale"]
-NEUTRALISATIONS = ["None", "Market", "Sector", "Industry", "Subindustry"]
-BOOLEAN_SETTINGS = ["Off", "On"]
-DELAYS = [0, 1]
+
+def order_result_columns(df):
+    """Apply a stable CSV column order while preserving any extra columns."""
+    ordered = [column for column in CSV_COLUMN_ORDER if column in df.columns]
+    extras = [column for column in df.columns if column not in ordered]
+    return df.reindex(columns=ordered + extras)
+
+
 torch.set_default_dtype(torch.double)
 
 # Search dimensions:
@@ -202,6 +232,7 @@ def apply_transform(expression, transform):
 
 
 def make_alpha(params, universe=FIXED_UNIVERSE):
+    universe = normalise_universe(universe)
     (
         n, m, delay, decay, truncation, signal_type, price_field, transform,
         neutralisation, pasteurisation, nan_handling,
@@ -247,6 +278,8 @@ def compute_score(fitness, sharpe, turnover, passed):
 
 def load_existing_results(user, log_path=None, universe=FIXED_UNIVERSE, region=FIXED_REGION):
     """Load all completed trials from CSV and convert them into BoTorch training data."""
+    universe = normalise_universe(universe)
+
     if log_path is None:
         log_path = get_log_path(user=user, universe=universe, region=region)
 
@@ -257,33 +290,64 @@ def load_existing_results(user, log_path=None, universe=FIXED_UNIVERSE, region=F
     if df.empty:
         return [], None, None
 
+    missing_columns = {"params", "score"} - set(df.columns)
+    if missing_columns:
+        raise ValueError(f"{log_path} is missing required column(s): {sorted(missing_columns)}")
+
     existing_results = df.to_dict("records")
     train_x = []
     train_y = []
+    skipped_rows = 0
 
     for _, row in df.iterrows():
-        params = canonicalise_params(row["params"])
-        score = float(row["score"])
-        train_x.append(encode_params(params))
-        train_y.append([score])
+        try:
+            params = canonicalise_params(row["params"])
+            score = float(row["score"])
+            train_x.append(encode_params(params))
+            train_y.append([score])
+        except (ValueError, TypeError, SyntaxError) as error:
+            skipped_rows += 1
+            print(f"Skipping one unreadable saved trial in {log_path}: {error}")
 
     train_x = torch.tensor(train_x) if train_x else None
     train_y = torch.tensor(train_y) if train_y else None
+
+    if skipped_rows:
+        print(f"Loaded {len(train_x) if train_x is not None else 0} usable trial(s); skipped {skipped_rows}.")
 
     return existing_results, train_x, train_y
 
 
 def append_result_to_csv(result, user, log_path=None, universe=FIXED_UNIVERSE, region=FIXED_REGION):
     """Append one completed result immediately, so progress survives kernel stops."""
+    universe = normalise_universe(universe)
+
     if log_path is None:
         log_path = get_log_path(user=user, universe=universe, region=region)
 
-    result_df = pd.DataFrame([result])
+    result = dict(result)
+    result["run_timestamp"] = datetime.now().isoformat(sep=" ", timespec="seconds")
+    result.setdefault("region", str(region).strip().upper())
+    result.setdefault("universe", universe)
+    result.setdefault("user", normalise_user_name(user))
 
     if log_path.exists() and log_path.stat().st_size > 0:
-        result_df.to_csv(log_path, mode="a", header=False, index=False)
+        existing_df = pd.read_csv(log_path)
+        result_df = pd.DataFrame([result])
+        combined_columns_df = order_result_columns(
+            pd.concat([existing_df, result_df], ignore_index=True, sort=False)
+        )
+
+        if list(existing_df.columns) == list(combined_columns_df.columns):
+            result_df = result_df.reindex(columns=combined_columns_df.columns)
+            result_df.to_csv(log_path, mode="a", header=False, index=False)
+        else:
+            combined_columns_df.to_csv(log_path, index=False)
     else:
+        result_df = order_result_columns(pd.DataFrame([result]))
         result_df.to_csv(log_path, index=False)
+
+    return result
 
 
 def ask_float(prompt):
@@ -312,6 +376,7 @@ def ask_bool(prompt):
 
 
 def ask_user_for_metrics(params, user, universe=FIXED_UNIVERSE):
+    universe = normalise_universe(universe)
     alpha, settings = make_alpha(params, universe=universe)
 
     print("\nSubmit this alpha manually on BRAIN:")
@@ -343,6 +408,7 @@ def ask_user_for_metrics(params, user, universe=FIXED_UNIVERSE):
     return {
         "alpha": alpha,
         "settings": settings,
+        "region": FIXED_REGION,
         "universe": universe,
         "user": normalise_user_name(user),
         "params": canonicalise_params(params),
@@ -404,8 +470,7 @@ def run_one_trial(user, universe=FIXED_UNIVERSE, seed_threshold=50):
     run_one_trial(user="Angze", universe="TOP3000")
     or run_one_trial(user="Devan", universe="TOP1000").
     """
-    if universe not in UNIVERSES:
-        raise ValueError(f"Unsupported universe: {universe}. Choose from {UNIVERSES}.")
+    universe = normalise_universe(universe)
 
     user_slug = normalise_user_name(user)
 
@@ -430,6 +495,6 @@ def run_one_trial(user, universe=FIXED_UNIVERSE, seed_threshold=50):
         print("Trial cancelled. Nothing was saved.")
         return None
 
-    append_result_to_csv(new_result, user=user_slug, log_path=log_path, universe=universe)
+    new_result = append_result_to_csv(new_result, user=user_slug, log_path=log_path, universe=universe)
     print(f"Saved completed trial to {log_path}.")
     return new_result

@@ -470,6 +470,8 @@ Do not commit experiment logs or private outputs:
 ```
 brain_bo_*.csv
 brain_bo_log.csv
+combined_brain_bo_*.csv
+top_trials_*.csv
 __pycache__/
 .ipynb_checkpoints/
 .venv/

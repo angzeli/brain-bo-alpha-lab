@@ -4,9 +4,23 @@ from pathlib import Path
 import pandas as pd
 
 
+SUPPORTED_UNIVERSES = ("top3000", "top1000", "top500", "top200")
 RAW_LOG_PATTERN = re.compile(
-    r"^brain_bo_(?P<region>[a-z]+)_(?P<universe>top\d+)_(?P<user>[a-z0-9_]+)\.csv$"
+    r"^brain_bo_(?P<region>[a-z]+)_(?P<universe>top(?:3000|1000|500|200))_(?P<user>[a-z0-9_]+)\.csv$"
 )
+
+
+def parse_raw_log_filename(file):
+    """Return source metadata for a current-format raw BO log filename."""
+    file = Path(file)
+    match = RAW_LOG_PATTERN.match(file.name.lower())
+    if match is None:
+        raise ValueError(
+            f"{file.name} is not a current raw BO log. Expected "
+            "brain_bo_{region}_{universe}_{user}.csv."
+        )
+
+    return match.groupdict()
 
 
 def find_log_files(
@@ -38,22 +52,25 @@ def find_log_files(
     """
     directory = Path(directory)
     files = []
+    region = None if region is None else str(region).lower()
+    universe = None if universe is None else str(universe).lower()
+
+    if universe is not None and universe not in SUPPORTED_UNIVERSES:
+        raise ValueError(f"Unsupported universe: {universe}. Choose from {SUPPORTED_UNIVERSES}.")
 
     for file in directory.glob(pattern):
         if not file.is_file():
             continue
 
-        match = RAW_LOG_PATTERN.match(file.name.lower())
-        if match is None:
+        try:
+            metadata = parse_raw_log_filename(file)
+        except ValueError:
             continue
 
-        file_region = match.group("region")
-        file_universe = match.group("universe")
-
-        if region is not None and file_region != str(region).lower():
+        if region is not None and metadata["region"] != region:
             continue
 
-        if universe is not None and file_universe != str(universe).lower():
+        if universe is not None and metadata["universe"] != universe:
             continue
 
         files.append(file)
@@ -65,7 +82,7 @@ def load_and_combine_logs(files):
     """
     Load multiple BO CSV logs and combine them into one DataFrame.
 
-    Adds a `source_file` column so each row can be traced back to its original log.
+    Adds source metadata columns so each row can be traced back to its raw log.
     """
     if not files:
         raise FileNotFoundError("No CSV log files were found.")
@@ -74,14 +91,12 @@ def load_and_combine_logs(files):
 
     for file in files:
         file = Path(file)
+        metadata = parse_raw_log_filename(file)
         df = pd.read_csv(file)
 
-        match = RAW_LOG_PATTERN.match(file.name.lower())
-        if match is not None:
-            df["source_region"] = match.group("region")
-            df["source_universe"] = match.group("universe")
-            df["source_user"] = match.group("user")
-
+        df["source_region"] = metadata["region"]
+        df["source_universe"] = metadata["universe"]
+        df["source_user"] = metadata["user"]
         df["source_file"] = file.name
         dfs.append(df)
 
@@ -123,36 +138,3 @@ def combine_logs(
         combined.to_csv(output_path, index=False)
 
     return combined
-
-
-def summarize_combined_logs(df):
-    """
-    Produce a simple summary of combined BO results.
-    """
-    summary = {
-        "n_trials": len(df),
-        "n_users": df["user"].nunique() if "user" in df.columns else (
-            df["source_user"].nunique() if "source_user" in df.columns else None
-        ),
-        "users": sorted(df["user"].dropna().unique()) if "user" in df.columns else (
-            sorted(df["source_user"].dropna().unique()) if "source_user" in df.columns else None
-        ),
-        "mean_score": df["score"].mean() if "score" in df.columns else None,
-        "best_score": df["score"].max() if "score" in df.columns else None,
-        "mean_fitness": df["fitness"].mean() if "fitness" in df.columns else None,
-        "mean_sharpe": df["sharpe"].mean() if "sharpe" in df.columns else None,
-        "mean_turnover": df["turnover"].mean() if "turnover" in df.columns else None,
-        "pass_rate": df["passed"].mean() if "passed" in df.columns else None,
-    }
-
-    return pd.Series(summary)
-
-
-def top_trials(df, n=10, sort_by="score"):
-    """
-    Return the top n trials sorted by a chosen metric.
-    """
-    if sort_by not in df.columns:
-        raise ValueError(f"`{sort_by}` is not a column in the DataFrame.")
-
-    return df.sort_values(sort_by, ascending=False).head(n)

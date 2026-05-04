@@ -75,8 +75,7 @@ Each user/universe pair has its own independent log file. For example:
 
 ```text
 brain_bo_usa_top3000_angze.csv
-brain_bo_usa_top1000_angze.csv
-brain_bo_usa_top3000_teammate.csv
+brain_bo_usa_top1000_alice.csv
 ```
 
 ---
@@ -110,6 +109,8 @@ The region is currently fixed to `USA`, and each universe is treated as a separa
 Completed trials are saved immediately after the user enters the metrics.
 
 This means the workflow can be stopped and resumed safely. If the notebook or Python process is closed after 10 completed trials, the next run will automatically reload those 10 trials from the relevant CSV file.
+
+Pressing Enter on an empty metric prompt cancels the current trial without writing a CSV row.
 
 CSV logs are excluded from version control because they may contain private alpha expressions and performance results.
 

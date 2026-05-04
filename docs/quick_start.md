@@ -60,6 +60,8 @@ If it fails, enter:
 
     n
 
+If you press Enter on an empty metric prompt, the current trial is cancelled and no CSV row is saved.
+
 ## 4. Repeat
 
 Run the same notebook cell again to get the next suggestion.
