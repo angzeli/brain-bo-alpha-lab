@@ -19,7 +19,18 @@ FIXED_TEST_MONTHS = 0
 FIXED_DELAY = 1
 
 UNIVERSES = ["TOP3000", "TOP1000", "TOP500", "TOP200"]
-SIGNAL_TYPES = ["momentum", "reversal", "volume", "volatility"]
+TEMPLATE_TYPES = [
+    "price_momentum",
+    "price_reversion",
+    "low_volatility",
+    "volume_ratio",
+    "range_position",
+    "short_long_trend",
+    "volume_surprise",
+    "price_volume_momentum",
+    "price_volume_reversal",
+    "intraday_position",
+]
 PRICE_FIELDS = ["close", "open", "high", "low", "vwap"]
 TRANSFORMS = ["rank", "zscore", "scale"]
 NEUTRALISATIONS = ["None", "Market", "Sector", "Industry", "Subindustry"]
@@ -47,11 +58,24 @@ CSV_COLUMN_ORDER = [
     "score",
 ]
 
-ALPHA_CATEGORY_BY_SIGNAL = {
-    "momentum": "price momentum",
-    "reversal": "price reversion",
-    "volume": "volume",
-    "volatility": "price reversion",
+TEMPLATE_CATEGORY_MAP = {
+    "price_momentum": "price momentum",
+    "price_reversion": "price reversion",
+    "low_volatility": "price reversion",
+    "volume_ratio": "volume",
+    "range_position": "price momentum",
+    "short_long_trend": "price momentum",
+    "volume_surprise": "volume",
+    "price_volume_momentum": "price volume",
+    "price_volume_reversal": "price volume",
+    "intraday_position": "price reversion",
+}
+
+LEGACY_TEMPLATE_MAP = {
+    "momentum": "price_momentum",
+    "reversal": "price_reversion",
+    "volume": "volume_ratio",
+    "volatility": "low_volatility",
 }
 
 STOP_BATCH = object()
@@ -74,6 +98,15 @@ def normalise_universe(universe):
     cleaned = str(universe).strip().upper()
     if cleaned not in UNIVERSES:
         raise ValueError(f"Unsupported universe: {universe}. Choose from {UNIVERSES}.")
+    return cleaned
+
+
+def canonicalise_template_type(template_type):
+    """Return the current template name, accepting legacy saved names."""
+    cleaned = str(template_type).strip().lower()
+    cleaned = LEGACY_TEMPLATE_MAP.get(cleaned, cleaned)
+    if cleaned not in TEMPLATE_TYPES:
+        raise ValueError(f"Unsupported template_type: {template_type}. Choose from {TEMPLATE_TYPES}.")
     return cleaned
 
 
@@ -100,7 +133,7 @@ torch.set_default_dtype(torch.double)
 # x[1] = m, secondary / normalisation lookback window
 # x[2] = decay setting
 # x[3] = truncation level
-# x[4] = signal_type index
+# x[4] = template_type index
 # x[5] = price field index
 # x[6] = transform index
 # x[7] = neutralisation index
@@ -109,7 +142,7 @@ torch.set_default_dtype(torch.double)
 # Region, universe, delay, unit handling, and test period are fixed to keep scores comparable across trials.
 BOUNDS = torch.tensor([
     [3.0, 3.0, 1.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    [120.0, 120.0, 60.0, 0.20, 3.0, 4.0, 2.0, 4.0, 1.0, 1.0],
+    [120.0, 120.0, 60.0, 0.20, float(len(TEMPLATE_TYPES) - 1), 4.0, 2.0, 4.0, 1.0, 1.0],
 ])
 
 
@@ -117,7 +150,7 @@ def canonicalise_params(params):
     """Normalise old/new saved params into the current 10-parameter schema.
 
     Current schema:
-    [n, m, decay, truncation, signal_type, price_field, transform, neutralisation,
+    [n, m, decay, truncation, template_type, price_field, transform, neutralisation,
      pasteurisation, nan_handling]
 
     Region, universe, delay, unit handling, and test period are intentionally fixed
@@ -126,15 +159,15 @@ def canonicalise_params(params):
     if isinstance(params, str):
         params = ast.literal_eval(params)
 
-    # Old 3-parameter schema: [n, m, signal_type]
+    # Old 3-parameter schema: [n, m, signal/template_type]
     if len(params) == 3:
         return [
             int(params[0]), int(params[1]), 1, 0.01,
-            str(params[2]), "close", "rank", "None", "On", "Off",
+            canonicalise_template_type(params[2]), "close", "rank", "None", "On", "Off",
         ]
 
     # Previous 9-parameter schema:
-    # [n, m, decay, truncation, signal_type, price_field, transform,
+    # [n, m, decay, truncation, signal/template_type, price_field, transform,
     #  neutralisation, universe]
     if len(params) == 9:
         neutralisation = str(params[7])
@@ -142,18 +175,18 @@ def canonicalise_params(params):
 
         return [
             int(params[0]), int(params[1]), int(params[2]), float(params[3]),
-            str(params[4]), str(params[5]), str(params[6]),
+            canonicalise_template_type(params[4]), str(params[5]), str(params[6]),
             neutralisation, "On", "Off",
         ]
 
     # Previous 13-parameter schema:
-    # [n, m, decay, truncation, signal_type, price_field, transform,
+    # [n, m, decay, truncation, signal/template_type, price_field, transform,
     #  neutralisation, universe, pasteurisation, nan_handling,
     #  test_years, test_months]
     if len(params) == 13:
         return [
             int(params[0]), int(params[1]), int(params[2]), float(params[3]),
-            str(params[4]), str(params[5]), str(params[6]), str(params[7]),
+            canonicalise_template_type(params[4]), str(params[5]), str(params[6]), str(params[7]),
             str(params[9]), str(params[10]),
         ]
 
@@ -161,7 +194,7 @@ def canonicalise_params(params):
     if len(params) == 10:
         return [
             int(params[0]), int(params[1]), int(params[2]), float(params[3]),
-            str(params[4]), str(params[5]), str(params[6]), str(params[7]),
+            canonicalise_template_type(params[4]), str(params[5]), str(params[6]), str(params[7]),
             str(params[8]), str(params[9]),
         ]
 
@@ -169,7 +202,7 @@ def canonicalise_params(params):
     if len(params) == 11:
         return [
             int(params[0]), int(params[1]), int(params[3]), float(params[4]),
-            str(params[5]), str(params[6]), str(params[7]), str(params[8]),
+            canonicalise_template_type(params[5]), str(params[6]), str(params[7]), str(params[8]),
             str(params[9]), str(params[10]),
         ]
 
@@ -183,7 +216,7 @@ def decode_params(x):
     decay = int(round(float(x[2])))
     truncation = round(float(x[3]), 4)
 
-    signal_idx = int(round(float(x[4])))
+    template_idx = int(round(float(x[4])))
     field_idx = int(round(float(x[5])))
     transform_idx = int(round(float(x[6])))
     neutralisation_idx = int(round(float(x[7])))
@@ -195,7 +228,7 @@ def decode_params(x):
     decay = min(max(decay, 1), 60)
     truncation = min(max(truncation, 0.001), 0.20)
 
-    signal_idx = min(max(signal_idx, 0), len(SIGNAL_TYPES) - 1)
+    template_idx = min(max(template_idx, 0), len(TEMPLATE_TYPES) - 1)
     field_idx = min(max(field_idx, 0), len(PRICE_FIELDS) - 1)
     transform_idx = min(max(transform_idx, 0), len(TRANSFORMS) - 1)
     neutralisation_idx = min(max(neutralisation_idx, 0), len(NEUTRALISATIONS) - 1)
@@ -204,7 +237,7 @@ def decode_params(x):
 
     return [
         n, m, decay, truncation,
-        SIGNAL_TYPES[signal_idx],
+        TEMPLATE_TYPES[template_idx],
         PRICE_FIELDS[field_idx],
         TRANSFORMS[transform_idx],
         NEUTRALISATIONS[neutralisation_idx],
@@ -216,7 +249,7 @@ def decode_params(x):
 def encode_params(params):
     """Convert stored alpha parameters into numerical BO coordinates."""
     (
-        n, m, decay, truncation, signal_type, price_field, transform,
+        n, m, decay, truncation, template_type, price_field, transform,
         neutralisation, pasteurisation, nan_handling,
     ) = canonicalise_params(params)
 
@@ -225,7 +258,7 @@ def encode_params(params):
         float(m),
         float(decay),
         float(truncation),
-        float(SIGNAL_TYPES.index(signal_type)),
+        float(TEMPLATE_TYPES.index(template_type)),
         float(PRICE_FIELDS.index(price_field)),
         float(TRANSFORMS.index(transform)),
         float(NEUTRALISATIONS.index(neutralisation)),
@@ -244,26 +277,61 @@ def apply_transform(expression, transform):
     raise ValueError(f"Unknown transform: {transform}")
 
 
-def make_alpha(params, universe=FIXED_UNIVERSE):
-    universe = normalise_universe(universe)
+def trend_windows(n, m):
+    """Return short/long windows for templates that need n < m."""
+    if n < m:
+        return n, m
+    if m < n:
+        return m, n
+    if n < 120:
+        return n, n + 1
+    return n - 1, n
+
+
+def build_base_expression(params):
+    """Build the untransformed Fast Expression body for the chosen template."""
     (
-        n, m, decay, truncation, signal_type, price_field, transform,
+        n, m, decay, truncation, template_type, price_field, transform,
         neutralisation, pasteurisation, nan_handling,
     ) = canonicalise_params(params)
 
-    if signal_type == "momentum":
-        base_expression = f"ts_delta({price_field}, {n}) / ts_std_dev({price_field}, {m})"
-    elif signal_type == "reversal":
-        base_expression = f"-ts_delta({price_field}, {n}) / ts_std_dev({price_field}, {m})"
-    elif signal_type == "volume":
-        base_expression = f"ts_mean(volume, {n}) / ts_mean(volume, {m})"
-    elif signal_type == "volatility":
-        base_expression = f"-ts_std_dev({price_field}, {n})"
-    else:
-        raise ValueError(f"Unknown signal_type: {signal_type}")
+    if template_type == "price_momentum":
+        return f"ts_delta({price_field}, {n}) / ts_std_dev({price_field}, {m})"
+    if template_type == "price_reversion":
+        return f"-ts_delta({price_field}, {n}) / ts_std_dev({price_field}, {m})"
+    if template_type == "low_volatility":
+        return f"-ts_std_dev({price_field}, {n})"
+    if template_type == "volume_ratio":
+        return f"ts_mean(volume, {n}) / ts_mean(volume, {m})"
+    if template_type == "range_position":
+        return (
+            f"({price_field} - ts_min({price_field}, {n})) / "
+            f"(ts_max({price_field}, {n}) - ts_min({price_field}, {n}))"
+        )
+    if template_type == "short_long_trend":
+        short_window, long_window = trend_windows(n, m)
+        return f"ts_mean({price_field}, {short_window}) / ts_mean({price_field}, {long_window}) - 1"
+    if template_type == "volume_surprise":
+        return f"(volume - ts_mean(volume, {n})) / ts_std_dev(volume, {m})"
+    if template_type == "price_volume_momentum":
+        return f"ts_delta({price_field}, {n}) * (volume / ts_mean(volume, {m}))"
+    if template_type == "price_volume_reversal":
+        return f"-ts_delta({price_field}, {n}) * (volume / ts_mean(volume, {m}))"
+    if template_type == "intraday_position":
+        return "(close - open) / (high - low)"
 
+    raise ValueError(f"Unknown template_type: {template_type}")
+
+
+def make_alpha(params, universe=FIXED_UNIVERSE):
+    universe = normalise_universe(universe)
+    (
+        n, m, decay, truncation, template_type, price_field, transform,
+        neutralisation, pasteurisation, nan_handling,
+    ) = canonicalise_params(params)
+
+    base_expression = build_base_expression(params)
     transformed_expression = apply_transform(base_expression, transform)
-
     alpha = transformed_expression
 
     settings = (
@@ -280,26 +348,45 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
     """Build BRAIN-ready alpha name/category/description for a candidate."""
     universe = normalise_universe(universe)
     (
-        n, m, decay, truncation, signal_type, price_field, transform,
+        n, m, decay, truncation, template_type, price_field, transform,
         neutralisation, pasteurisation, nan_handling,
     ) = canonicalise_params(params)
 
-    alpha_category = ALPHA_CATEGORY_BY_SIGNAL[signal_type]
+    alpha_category = TEMPLATE_CATEGORY_MAP[template_type]
+    short_window, long_window = trend_windows(n, m)
 
-    if signal_type == "momentum":
+    if template_type == "price_momentum":
         alpha_name = f"mom_{price_field}_{n}_volnorm_{m}"
         uses = f"Uses a {n}-day {price_field} price change normalised by {m}-day {price_field} volatility"
-    elif signal_type == "reversal":
+    elif template_type == "price_reversion":
         alpha_name = f"rev_{price_field}_{n}_volnorm_{m}"
         uses = f"Uses a negative {n}-day {price_field} price change normalised by {m}-day {price_field} volatility"
-    elif signal_type == "volume":
-        alpha_name = f"vol_surge_{n}_{m}_{transform}"
-        uses = f"Uses the ratio of {n}-day average volume to {m}-day average volume"
-    elif signal_type == "volatility":
+    elif template_type == "low_volatility":
         alpha_name = f"low_vol_{price_field}_{n}_{transform}"
         uses = f"Uses negative {n}-day {price_field} volatility"
+    elif template_type == "volume_ratio":
+        alpha_name = f"vol_ratio_{n}_{m}_{transform}"
+        uses = f"Uses the ratio of {n}-day average volume to {m}-day average volume"
+    elif template_type == "range_position":
+        alpha_name = f"range_pos_{price_field}_{n}_{transform}"
+        uses = f"Uses where {price_field} sits within its {n}-day high-low range"
+    elif template_type == "short_long_trend":
+        alpha_name = f"trend_{price_field}_{short_window}_{long_window}_{transform}"
+        uses = f"Uses the ratio of {short_window}-day to {long_window}-day average {price_field} levels"
+    elif template_type == "volume_surprise":
+        alpha_name = f"vol_surprise_{n}_{m}_{transform}"
+        uses = f"Uses current volume versus its {n}-day average, normalised by {m}-day volume volatility"
+    elif template_type == "price_volume_momentum":
+        alpha_name = f"pv_mom_{price_field}_{n}_{m}_{transform}"
+        uses = f"Uses {n}-day {price_field} price change scaled by relative volume versus its {m}-day average"
+    elif template_type == "price_volume_reversal":
+        alpha_name = f"pv_rev_{price_field}_{n}_{m}_{transform}"
+        uses = f"Uses negative {n}-day {price_field} price change scaled by relative volume versus its {m}-day average"
+    elif template_type == "intraday_position":
+        alpha_name = f"intraday_pos_{transform}"
+        uses = "Uses where the close sits relative to the open inside the daily high-low range"
     else:
-        raise ValueError(f"Unknown signal_type: {signal_type}")
+        raise ValueError(f"Unknown template_type: {template_type}")
 
     alpha_description = (
         f"{uses}, transformed with {transform}. "
@@ -591,7 +678,7 @@ def suggest_random_candidate():
     candidate[1] = torch.randint(3, 121, size=(1,)).item()
     candidate[2] = torch.randint(1, 61, size=(1,)).item()
     candidate[3] = torch.empty(1).uniform_(0.001, 0.20).item()
-    candidate[4] = torch.randint(0, len(SIGNAL_TYPES), size=(1,)).item()
+    candidate[4] = torch.randint(0, len(TEMPLATE_TYPES), size=(1,)).item()
     candidate[5] = torch.randint(0, len(PRICE_FIELDS), size=(1,)).item()
     candidate[6] = torch.randint(0, len(TRANSFORMS), size=(1,)).item()
     candidate[7] = torch.randint(0, len(NEUTRALISATIONS), size=(1,)).item()
