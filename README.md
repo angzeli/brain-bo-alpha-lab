@@ -32,6 +32,7 @@ The workflow is deliberately **human-in-the-loop**:
 ```python
 brain-bo-alpha-lab/
 ├── docs/
+│   ├── brain_alpha_parameters_and_checks.md
 │   ├── github_terminal_workflow.md
 │   └── quick_start.md 
 ├── .gitignore
@@ -50,6 +51,7 @@ brain-bo-alpha-lab/
 For detailed setup and usage instructions, see:
 
 - [`docs/quick_start.md`](docs/quick_start.md) — beginner-friendly guide for running the workflow.
+- [`docs/brain_alpha_parameters_and_checks.md`](docs/brain_alpha_parameters_and_checks.md) — explains BRAIN metrics, pass/fail checks, and how to record simulation results.
 - [`docs/github_terminal_workflow.md`](docs/github_terminal_workflow.md) — practical Git/GitHub terminal commands for collaboration.
 
 ---
