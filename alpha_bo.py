@@ -37,6 +37,7 @@ NEUTRALISATIONS = ["None", "Market", "Sector", "Industry", "Subindustry"]
 BOOLEAN_SETTINGS = ["Off", "On"]
 
 CSV_COLUMN_ORDER = [
+    "run_id",
     "run_timestamp",
     "user",
     "region",
@@ -54,7 +55,7 @@ CSV_COLUMN_ORDER = [
     "returns_pct",
     "drawdown_pct",
     "margin_permyriad",
-    "passed",
+    "brain_rating",
     "score",
 ]
 
@@ -76,6 +77,29 @@ LEGACY_TEMPLATE_MAP = {
     "reversal": "price_reversion",
     "volume": "volume_ratio",
     "volatility": "low_volatility",
+}
+
+BRAIN_RATINGS = [
+    "Spectacular",
+    "Excellent",
+    "Good",
+    "Average",
+    "Needs Improvement",
+]
+
+BRAIN_RATING_ALIASES = {
+    "spectacular": "Spectacular",
+    "excellent": "Excellent",
+    "good": "Good",
+    "average": "Average",
+    "avg": "Average",
+    "needs improvement": "Needs Improvement",
+    "need improvement": "Needs Improvement",
+    "needs_improvement": "Needs Improvement",
+    "need_improvement": "Needs Improvement",
+    "needs-improvement": "Needs Improvement",
+    "need-improvement": "Needs Improvement",
+    "ni": "Needs Improvement",
 }
 
 STOP_BATCH = object()
@@ -108,6 +132,13 @@ def canonicalise_template_type(template_type):
     if cleaned not in TEMPLATE_TYPES:
         raise ValueError(f"Unsupported template_type: {template_type}. Choose from {TEMPLATE_TYPES}.")
     return cleaned
+
+
+def normalise_brain_rating(value):
+    """Return the canonical BRAIN rating label for flexible user input."""
+    cleaned = str(value).strip().lower()
+    cleaned = " ".join(cleaned.replace("_", " ").replace("-", " ").split())
+    return BRAIN_RATING_ALIASES.get(cleaned)
 
 
 def get_log_path(user, universe=FIXED_UNIVERSE, region=FIXED_REGION):
@@ -402,8 +433,8 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
     }
 
 
-def compute_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, margin_permyriad, passed):
-    score = (
+def compute_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, margin_permyriad):
+    return (
         fitness
         + 0.5 * sharpe
         + 0.02 * returns_pct
@@ -411,9 +442,6 @@ def compute_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, marg
         - 0.002 * turnover_pct
         - 0.02 * abs(drawdown_pct)
     )
-    if not passed:
-        score -= 2.0
-    return score
 
 
 def load_existing_results(user, log_path=None, universe=FIXED_UNIVERSE, region=FIXED_REGION):
@@ -505,20 +533,22 @@ def ask_float(prompt, allow_stop=False):
             print(f"Please enter a number, or press Enter to skip this candidate{stop_text}.")
 
 
-def ask_bool(prompt, allow_stop=False):
-    """Ask for a yes/no value. Empty input skips the candidate; `stop` ends a batch."""
+def ask_brain_rating(prompt, allow_stop=False):
+    """Ask for a BRAIN rating. Empty input skips the candidate; `stop` ends a batch."""
+    allowed_text = " / ".join(BRAIN_RATINGS)
     while True:
-        value = input(prompt).strip().lower()
+        value = input(prompt).strip()
         if value == "":
             return None
-        if allow_stop and value == "stop":
+        if allow_stop and value.lower() == "stop":
             return STOP_BATCH
-        if value in {"y", "yes", "true", "1"}:
-            return True
-        if value in {"n", "no", "false", "0"}:
-            return False
+
+        rating = normalise_brain_rating(value)
+        if rating is not None:
+            return rating
+
         stop_text = ", type stop to end the batch" if allow_stop else ""
-        print(f"Please enter y/n, or press Enter to skip this candidate{stop_text}.")
+        print(f"Please enter one of: {allowed_text}. Press Enter to skip this candidate{stop_text}.")
 
 
 def build_candidate(params, user, universe=FIXED_UNIVERSE, batch_candidate_id=None):
@@ -636,10 +666,11 @@ def collect_metrics_for_candidate(candidate, index=None, batch=None, allow_stop=
     if margin_permyriad is None:
         return None
 
-    passed = ask_bool("Passed? y/n: ", allow_stop=allow_stop)
-    if passed is STOP_BATCH:
+    rating_prompt = "BRAIN rating [Spectacular / Excellent / Good / Average / Needs Improvement]: "
+    brain_rating = ask_brain_rating(rating_prompt, allow_stop=allow_stop)
+    if brain_rating is STOP_BATCH:
         return STOP_BATCH
-    if passed is None:
+    if brain_rating is None:
         return None
 
     score = compute_score(
@@ -649,7 +680,6 @@ def collect_metrics_for_candidate(candidate, index=None, batch=None, allow_stop=
         returns_pct=returns_pct,
         drawdown_pct=drawdown_pct,
         margin_permyriad=margin_permyriad,
-        passed=passed,
     )
 
     return {
@@ -660,7 +690,7 @@ def collect_metrics_for_candidate(candidate, index=None, batch=None, allow_stop=
         "returns_pct": returns_pct,
         "drawdown_pct": drawdown_pct,
         "margin_permyriad": margin_permyriad,
-        "passed": passed,
+        "brain_rating": brain_rating,
         "score": score,
     }
 

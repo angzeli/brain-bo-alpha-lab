@@ -9,15 +9,12 @@ This file helps understand the main WorldQuant BRAIN simulation outputs and how 
 It is useful to separate three ideas:
 
 - `simulated`: the Alpha was run on BRAIN and recorded in our CSV.
-- `passed`: the Alpha passed the relevant BRAIN checks.
+- `brain_rating`: the rating label shown by BRAIN's Fitness rating panel.
 - `submitted`: the user actually submitted the Alpha on BRAIN.
 
 In this repo, a CSV row means the Alpha was simulated and logged. It does not automatically mean the Alpha passed BRAIN checks or was submitted.
 
-The `passed` value in our Python prompt should be:
-
-- `y` only if the relevant required BRAIN checks pass.
-- `n` if one or more required checks fail.
+BRAIN pass/fail checks still matter, but the current Python workflow records the BRAIN rating label instead of a binary `passed` answer. Older CSV files may still contain a historical `passed` column.
 
 Submission remains a separate manual action on BRAIN.
 
@@ -32,7 +29,7 @@ Fitness:
 Returns (%):
 Drawdown (%):
 Margin (‱):
-Passed? y/n:
+BRAIN rating:
 ```
 
 Enter numbers only. Do not type `%` or `‱` into numeric fields.
@@ -101,11 +98,17 @@ Margin measures profit per dollar traded. In BRAIN terms, it is PnL divided by t
 
 It is displayed in permyriad units, shown as `‱`. In our CSV we store this as `margin_permyriad`.
 
-### Passed? y/n
+### BRAIN rating
 
-This is our manual summary of BRAIN checks.
+This is the label shown in BRAIN's rating panel for the simulated Alpha.
 
-Enter `y` only if the Alpha passes the relevant required BRAIN checks. Enter `n` if any required check fails.
+Use one of:
+
+- Spectacular
+- Excellent
+- Good
+- Average
+- Needs Improvement
 
 ## 3. Fitness and BRAIN rating labels
 
@@ -178,15 +181,17 @@ Weight concentration 36.81% is above cutoff of 10% on 9/26/2019.
 Sub-universe Sharpe of -0.1 is below cutoff of 0.1.
 ```
 
-This Alpha should be recorded as:
+This Alpha failed the relevant checks because it passes some checks, such as turnover being below `70%`, but fails others, such as Sharpe, Fitness, weight concentration, and sub-universe Sharpe.
+
+In the current Python workflow, still record the BRAIN rating label shown by the platform in the `BRAIN rating` prompt. Do not infer a `y/n` value for new rows.
+
+For older logs that used the historical `passed` column, this example would have been recorded as:
 
 ```text
-Passed? n
+passed = n
 ```
 
-Why? It passes some checks, such as turnover being below `70%`, but it fails others, such as Sharpe, Fitness, weight concentration, and sub-universe Sharpe.
-
-An Alpha can pass some checks and fail others. The overall answer should be `passed = y` only if the relevant required BRAIN checks pass.
+An Alpha can pass some checks and fail others. Treat the BRAIN rating, BRAIN pass/fail checks, and actual submission decision as separate pieces of information.
 
 ## 7. Common failure modes and what to try
 
@@ -271,7 +276,7 @@ BRAIN Alpha statuses include:
 For this project:
 
 - A CSV row means `simulated`.
-- `passed = y` means the Alpha passed the relevant BRAIN checks.
+- `brain_rating` stores the BRAIN rating label shown after simulation.
 - `submitted` means the user manually submitted it on BRAIN.
 
 These are related but not the same.

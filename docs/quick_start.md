@@ -1,4 +1,4 @@
-# 🚀 Quick Start for Teammates
+# 🚀 Quick Start
 
 You do not need to understand Bayesian optimisation before using this project.
 
@@ -64,17 +64,17 @@ After the BRAIN simulation finishes, Python will ask for:
     Returns (%):
     Drawdown (%):
     Margin (‱):
-    Passed? y/n:
+    BRAIN rating:
 
 Copy these values from BRAIN.
 
-If the alpha passes the checks, enter:
+For the rating, enter the label shown by BRAIN, for example:
 
-    y
+    Good
 
-If it fails, enter:
+or:
 
-    n
+    Needs Improvement
 
 If you press Enter on an empty metric prompt, the current trial is cancelled and no CSV row is saved.
 
