@@ -25,6 +25,7 @@ TEMPLATE_TYPES = [
     "low_volatility",
     "volume_ratio",
     "range_position",
+    "time_series_rank",
     "short_long_trend",
     "volume_surprise",
     "price_volume_momentum",
@@ -65,6 +66,7 @@ TEMPLATE_CATEGORY_MAP = {
     "low_volatility": "price reversion",
     "volume_ratio": "volume",
     "range_position": "price momentum",
+    "time_series_rank": "price momentum",
     "short_long_trend": "price momentum",
     "volume_surprise": "volume",
     "price_volume_momentum": "price volume",
@@ -335,10 +337,9 @@ def build_base_expression(params):
     if template_type == "volume_ratio":
         return f"ts_mean(volume, {n}) / ts_mean(volume, {m})"
     if template_type == "range_position":
-        return (
-            f"({price_field} - ts_min({price_field}, {n})) / "
-            f"(ts_max({price_field}, {n}) - ts_min({price_field}, {n}))"
-        )
+        return f"ts_scale({price_field}, {n})"
+    if template_type == "time_series_rank":
+        return f"ts_rank({price_field}, {n})"
     if template_type == "short_long_trend":
         short_window, long_window = trend_windows(n, m)
         return f"ts_mean({price_field}, {short_window}) / ts_mean({price_field}, {long_window}) - 1"
@@ -399,8 +400,11 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
         alpha_name = f"vol_ratio_{n}_{m}_{transform}"
         uses = f"Uses the ratio of {n}-day average volume to {m}-day average volume"
     elif template_type == "range_position":
-        alpha_name = f"range_pos_{price_field}_{n}_{transform}"
-        uses = f"Uses where {price_field} sits within its {n}-day high-low range"
+        alpha_name = f"range_scale_{price_field}_{n}_{transform}"
+        uses = f"Uses the time-series scaled position of {price_field} over a {n}-day lookback"
+    elif template_type == "time_series_rank":
+        alpha_name = f"ts_rank_{price_field}_{n}_{transform}"
+        uses = f"Uses the {n}-day time-series rank of {price_field}"
     elif template_type == "short_long_trend":
         alpha_name = f"trend_{price_field}_{short_window}_{long_window}_{transform}"
         uses = f"Uses the ratio of {short_window}-day to {long_window}-day average {price_field} levels"
