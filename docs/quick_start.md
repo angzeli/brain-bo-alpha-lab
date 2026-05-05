@@ -24,6 +24,10 @@ For example:
 
     new_result = run_one_trial(user="Alice", universe="TOP3000")
 
+To suggest several candidates at once, set `BATCH` in the notebook or pass:
+
+    new_results = run_one_trial(user="Alice", universe="TOP3000", batch=3)
+
 This creates or updates a personal CSV file such as:
 
     brain_bo_usa_top3000_alice.csv

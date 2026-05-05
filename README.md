@@ -64,6 +64,12 @@ from alpha_bo import run_one_trial
 new_result = run_one_trial(user="Angze", universe="TOP3000")
 ```
 
+To suggest and enter multiple manual simulations in one notebook run, pass `batch`:
+
+```python
+new_results = run_one_trial(user="Angze", universe="TOP3000", batch=3)
+```
+
 This will:
 
 1. load the existing CSV log for the selected user and universe,

@@ -30,6 +30,7 @@ CSV_COLUMN_ORDER = [
     "user",
     "region",
     "universe",
+    "batch_candidate_id",
     "alpha_name",
     "alpha_category",
     "alpha_description",
@@ -52,6 +53,9 @@ ALPHA_CATEGORY_BY_SIGNAL = {
     "volume": "volume",
     "volatility": "price reversion",
 }
+
+STOP_BATCH = object()
+MAX_CANDIDATE_RETRIES = 20
 
 
 def normalise_user_name(user):
@@ -312,9 +316,16 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
 
 
 def compute_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, margin_permyriad, passed):
-    score = fitness + 0.5 * sharpe - 0.002 * turnover_pct
+    score = (
+        fitness
+        + 0.5 * sharpe
+        + 0.02 * returns_pct
+        + 0.05 * margin_permyriad
+        - 0.002 * turnover_pct
+        - 0.02 * abs(drawdown_pct)
+    )
     if not passed:
-        score -= 2
+        score -= 2.0
     return score
 
 
@@ -392,77 +403,155 @@ def append_result_to_csv(result, user, log_path=None, universe=FIXED_UNIVERSE, r
     return result
 
 
-def ask_float(prompt):
-    """Ask for a float. Empty input cleanly cancels the current trial instead of crashing."""
+def ask_float(prompt, allow_stop=False):
+    """Ask for a float. Empty input skips the candidate; `stop` ends a batch."""
     while True:
         value = input(prompt).strip()
         if value == "":
             return None
+        if allow_stop and value.lower() == "stop":
+            return STOP_BATCH
         try:
             return float(value)
         except ValueError:
-            print("Please enter a number, or press Enter to cancel this trial.")
+            stop_text = ", type stop to end the batch" if allow_stop else ""
+            print(f"Please enter a number, or press Enter to skip this candidate{stop_text}.")
 
 
-def ask_bool(prompt):
-    """Ask for a yes/no value. Empty input cleanly cancels the current trial."""
+def ask_bool(prompt, allow_stop=False):
+    """Ask for a yes/no value. Empty input skips the candidate; `stop` ends a batch."""
     while True:
         value = input(prompt).strip().lower()
         if value == "":
             return None
+        if allow_stop and value == "stop":
+            return STOP_BATCH
         if value in {"y", "yes", "true", "1"}:
             return True
         if value in {"n", "no", "false", "0"}:
             return False
-        print("Please enter y/n, or press Enter to cancel this trial.")
+        stop_text = ", type stop to end the batch" if allow_stop else ""
+        print(f"Please enter y/n, or press Enter to skip this candidate{stop_text}.")
 
 
-def ask_user_for_metrics(params, user, universe=FIXED_UNIVERSE):
+def build_candidate(params, user, universe=FIXED_UNIVERSE, batch_candidate_id=None):
+    """Create a candidate dict with all BRAIN-ready fields, before metrics exist."""
     universe = normalise_universe(universe)
     alpha, settings = make_alpha(params, universe=universe)
     metadata = build_alpha_metadata(params, universe=universe)
 
-    print("\nBO candidate")
+    return {
+        **metadata,
+        "alpha": alpha,
+        "settings": settings,
+        "region": FIXED_REGION,
+        "universe": universe,
+        "user": normalise_user_name(user),
+        "batch_candidate_id": batch_candidate_id,
+        "params": canonicalise_params(params),
+    }
+
+
+def suggest_one_candidate(user, universe, train_x, train_y, seed_threshold, used_params=None):
+    """Suggest one candidate and avoid duplicate params inside the current batch."""
+    used_params = set() if used_params is None else used_params
+    use_botorch = train_x is not None and train_x.shape[0] >= seed_threshold
+    last_candidate = None
+
+    for attempt in range(MAX_CANDIDATE_RETRIES):
+        if use_botorch and attempt == 0:
+            raw_candidate = suggest_botorch_candidate(train_x, train_y)
+        else:
+            raw_candidate = suggest_random_candidate()
+
+        candidate = build_candidate(
+            params=decode_params(raw_candidate),
+            user=user,
+            universe=universe,
+        )
+        last_candidate = candidate
+
+        if tuple(candidate["params"]) not in used_params:
+            return candidate
+
+    return last_candidate
+
+
+def print_candidate(candidate, index=None, batch=None):
+    """Print a candidate in a BRAIN-ready block."""
+    if index is None or batch is None:
+        print("\nBO candidate")
+    else:
+        print(f"\nBO candidate {index}/{batch}")
+
     print("-" * 50)
+    if candidate.get("batch_candidate_id") is not None:
+        print("\nBatch candidate ID:")
+        print(candidate["batch_candidate_id"])
     print("\nAlpha expression:")
-    print(alpha)
+    print(candidate["alpha"])
     print("\nSuggested settings:")
-    print(settings)
+    print(candidate["settings"])
     print("")
     print("Suggested alpha name:")
-    print(metadata["alpha_name"])
+    print(candidate["alpha_name"])
     print("\nCategory:")
-    print(metadata["alpha_category"])
+    print(candidate["alpha_category"])
     print("\nDescription:")
-    print(metadata["alpha_description"])
-    print("\nAfter the simulation finishes, enter the Aggregate Data metrics:")
-    print("Press Enter on an empty prompt to cancel without saving this trial.")
+    print(candidate["alpha_description"])
 
-    sharpe = ask_float("Sharpe: ")
+
+def collect_metrics_for_candidate(candidate, index=None, batch=None, allow_stop=False):
+    """Collect Aggregate Data metrics and return a completed result dict."""
+    if index is None or batch is None:
+        print("\nAfter the simulation finishes, enter the Aggregate Data metrics:")
+        print("Press Enter on an empty prompt to cancel without saving this trial.")
+    else:
+        print(f"\nEnter metrics for candidate {index}/{batch}: {candidate['alpha_name']}")
+        print("\nAlpha expression:")
+        print(candidate["alpha"])
+        stop_hint = " Type stop at any prompt to end the remaining batch." if allow_stop else ""
+        print(f"Press Enter on an empty prompt to skip this candidate without saving it.{stop_hint}")
+
+    sharpe = ask_float("Sharpe: ", allow_stop=allow_stop)
+    if sharpe is STOP_BATCH:
+        return STOP_BATCH
     if sharpe is None:
         return None
 
-    turnover_pct = ask_float("Turnover (%): ")
+    turnover_pct = ask_float("Turnover (%): ", allow_stop=allow_stop)
+    if turnover_pct is STOP_BATCH:
+        return STOP_BATCH
     if turnover_pct is None:
         return None
 
-    fitness = ask_float("Fitness: ")
+    fitness = ask_float("Fitness: ", allow_stop=allow_stop)
+    if fitness is STOP_BATCH:
+        return STOP_BATCH
     if fitness is None:
         return None
 
-    returns_pct = ask_float("Returns (%): ")
+    returns_pct = ask_float("Returns (%): ", allow_stop=allow_stop)
+    if returns_pct is STOP_BATCH:
+        return STOP_BATCH
     if returns_pct is None:
         return None
 
-    drawdown_pct = ask_float("Drawdown (%): ")
+    drawdown_pct = ask_float("Drawdown (%): ", allow_stop=allow_stop)
+    if drawdown_pct is STOP_BATCH:
+        return STOP_BATCH
     if drawdown_pct is None:
         return None
 
-    margin_permyriad = ask_float("Margin (‱): ")
+    margin_permyriad = ask_float("Margin (‱): ", allow_stop=allow_stop)
+    if margin_permyriad is STOP_BATCH:
+        return STOP_BATCH
     if margin_permyriad is None:
         return None
 
-    passed = ask_bool("Passed? y/n: ")
+    passed = ask_bool("Passed? y/n: ", allow_stop=allow_stop)
+    if passed is STOP_BATCH:
+        return STOP_BATCH
     if passed is None:
         return None
 
@@ -475,16 +564,9 @@ def ask_user_for_metrics(params, user, universe=FIXED_UNIVERSE):
         margin_permyriad=margin_permyriad,
         passed=passed,
     )
-    alpha, settings = make_alpha(params, universe=universe)
 
     return {
-        **metadata,
-        "alpha": alpha,
-        "settings": settings,
-        "region": FIXED_REGION,
-        "universe": universe,
-        "user": normalise_user_name(user),
-        "params": canonicalise_params(params),
+        **candidate,
         "sharpe": sharpe,
         "turnover_pct": turnover_pct,
         "fitness": fitness,
@@ -494,6 +576,13 @@ def ask_user_for_metrics(params, user, universe=FIXED_UNIVERSE):
         "passed": passed,
         "score": score,
     }
+
+
+def ask_user_for_metrics(params, user, universe=FIXED_UNIVERSE):
+    """Backward-compatible single-candidate prompt helper."""
+    candidate = build_candidate(params=params, user=user, universe=universe)
+    print_candidate(candidate)
+    return collect_metrics_for_candidate(candidate)
 
 
 def suggest_random_candidate():
@@ -535,8 +624,8 @@ def suggest_botorch_candidate(train_x, train_y):
     return candidate
 
 
-def run_one_trial(user, universe=FIXED_UNIVERSE, seed_threshold=50):
-    """Run one suggest → manual simulate → save cycle.
+def run_one_trial(user, universe=FIXED_UNIVERSE, batch=1, seed_threshold=50):
+    """Run one or more suggest → manual simulate → save cycles.
 
     Re-run this function anytime. Completed trials are appended to CSV immediately,
     and the CSV is reloaded automatically at the start of each call.
@@ -546,6 +635,9 @@ def run_one_trial(user, universe=FIXED_UNIVERSE, seed_threshold=50):
     or run_one_trial(user="Devan", universe="TOP1000").
     """
     universe = normalise_universe(universe)
+    batch = int(batch)
+    if batch < 1:
+        raise ValueError("batch must be at least 1.")
 
     user_slug = normalise_user_name(user)
 
@@ -557,19 +649,72 @@ def run_one_trial(user, universe=FIXED_UNIVERSE, seed_threshold=50):
     print(f"Loaded {n_existing} existing completed trials from {log_path}.")
 
     if train_x is None or train_x.shape[0] < seed_threshold:
-        raw_candidate = suggest_random_candidate()
-        print(f"Using random candidate because fewer than {seed_threshold} trials are available.")
+        print(f"Using random candidates because fewer than {seed_threshold} trials are available.")
     else:
-        raw_candidate = suggest_botorch_candidate(train_x, train_y)
-        print("Using BoTorch LogExpectedImprovement candidate.")
+        print("Using BoTorch LogExpectedImprovement candidates.")
 
-    params = decode_params(raw_candidate)
-    new_result = ask_user_for_metrics(params, user=user_slug, universe=universe)
+    candidates = []
+    used_params = set()
+    for index in range(1, batch + 1):
+        candidate = suggest_one_candidate(
+            user=user_slug,
+            universe=universe,
+            train_x=train_x,
+            train_y=train_y,
+            seed_threshold=seed_threshold,
+            used_params=used_params,
+        )
+        candidate["batch_candidate_id"] = index
+        used_params.add(tuple(candidate["params"]))
+        candidates.append(candidate)
 
-    if new_result is None:
-        print("Trial cancelled. Nothing was saved.")
-        return None
+    for index, candidate in enumerate(candidates, start=1):
+        print_candidate(
+            candidate,
+            index=index if batch > 1 else None,
+            batch=batch if batch > 1 else None,
+        )
 
-    new_result = append_result_to_csv(new_result, user=user_slug, log_path=log_path, universe=universe)
-    print(f"Saved completed trial to {log_path}.")
-    return new_result
+    saved_results = []
+    for index, candidate in enumerate(candidates, start=1):
+        completed_result = collect_metrics_for_candidate(
+            candidate,
+            index=index if batch > 1 else None,
+            batch=batch if batch > 1 else None,
+            allow_stop=batch > 1,
+        )
+
+        if completed_result is STOP_BATCH:
+            print("Batch stopped. Remaining candidates were not saved.")
+            break
+
+        if completed_result is None:
+            if batch > 1:
+                print(f"Candidate {index} skipped. Nothing was saved for this candidate.")
+            else:
+                print("Trial cancelled. Nothing was saved.")
+            continue
+
+        completed_result = append_result_to_csv(
+            completed_result,
+            user=user_slug,
+            log_path=log_path,
+            universe=universe,
+        )
+        saved_results.append(completed_result)
+        print(f"Saved candidate {index} to {log_path}.")
+
+    if batch == 1:
+        return saved_results[0] if saved_results else None
+
+    return saved_results
+
+
+def run_batch_trials(user, universe=FIXED_UNIVERSE, batch=1, seed_threshold=50):
+    """Run a batch of human-in-the-loop BO candidates."""
+    return run_one_trial(
+        user=user,
+        universe=universe,
+        batch=batch,
+        seed_threshold=seed_threshold,
+    )
