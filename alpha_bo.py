@@ -8,7 +8,7 @@ from botorch.acquisition import LogExpectedImprovement
 from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 from botorch.optim import optimize_acqf
-from botorch.utils.transforms import normalize, unnormalize, standardize
+from botorch.utils.transforms import standardize
 from gpytorch.mlls import ExactMarginalLogLikelihood
 
 FIXED_REGION = "USA"
@@ -106,6 +106,14 @@ BRAIN_RATING_ALIASES = {
 
 STOP_BATCH = object()
 MAX_CANDIDATE_RETRIES = 20
+LATENT_DIM = 10
+
+LOOKBACK_MIN = 3
+LOOKBACK_MAX = 120
+DECAY_MIN = 1
+DECAY_MAX = 60
+TRUNCATION_MIN = 0.001
+TRUNCATION_MAX = 0.20
 
 
 def normalise_user_name(user):
@@ -161,22 +169,22 @@ def order_result_columns(df):
 
 torch.set_default_dtype(torch.double)
 
-# Search dimensions:
-# x[0] = n, primary lookback window
-# x[1] = m, secondary / normalisation lookback window
-# x[2] = decay setting
-# x[3] = truncation level
-# x[4] = template_type index
-# x[5] = price field index
-# x[6] = transform index
-# x[7] = neutralisation index
-# x[8] = pasteurisation index: 0 Off, 1 On
-# x[9] = NaN handling index: 0 Off, 1 On
+# Latent search dimensions, all in [0, 1]:
+# x[0] = n_raw, primary lookback window
+# x[1] = m_raw, secondary / normalisation lookback window
+# x[2] = decay_raw
+# x[3] = truncation_raw
+# x[4] = template_type_raw
+# x[5] = price_field_raw
+# x[6] = transform_raw
+# x[7] = neutralisation_raw
+# x[8] = pasteurisation_raw
+# x[9] = nan_handling_raw
 # Region, universe, delay, unit handling, and test period are fixed to keep scores comparable across trials.
-BOUNDS = torch.tensor([
-    [3.0, 3.0, 1.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    [120.0, 120.0, 60.0, 0.20, float(len(TEMPLATE_TYPES) - 1), 4.0, 2.0, 4.0, 1.0, 1.0],
-])
+LATENT_BOUNDS = torch.tensor(
+    [[0.0] * LATENT_DIM, [1.0] * LATENT_DIM],
+    dtype=torch.double,
+)
 
 
 def canonicalise_params(params):
@@ -242,62 +250,122 @@ def canonicalise_params(params):
     raise ValueError(f"Unsupported params format with length {len(params)}: {params}")
 
 
-def decode_params(x):
-    """Convert a continuous BoTorch candidate into valid alpha parameters."""
-    n = int(round(float(x[0])))
-    m = int(round(float(x[1])))
-    decay = int(round(float(x[2])))
-    truncation = round(float(x[3]), 4)
+def clip_unit(raw_value):
+    return min(max(float(raw_value), 0.0), 1.0)
 
-    template_idx = int(round(float(x[4])))
-    field_idx = int(round(float(x[5])))
-    transform_idx = int(round(float(x[6])))
-    neutralisation_idx = int(round(float(x[7])))
-    pasteurisation_idx = int(round(float(x[8])))
-    nan_handling_idx = int(round(float(x[9])))
 
-    n = min(max(n, 3), 120)
-    m = min(max(m, 3), 120)
-    decay = min(max(decay, 1), 60)
-    truncation = min(max(truncation, 0.001), 0.20)
+def decode_float(raw_value, lower, upper):
+    return lower + clip_unit(raw_value) * (upper - lower)
 
-    template_idx = min(max(template_idx, 0), len(TEMPLATE_TYPES) - 1)
-    field_idx = min(max(field_idx, 0), len(PRICE_FIELDS) - 1)
-    transform_idx = min(max(transform_idx, 0), len(TRANSFORMS) - 1)
-    neutralisation_idx = min(max(neutralisation_idx, 0), len(NEUTRALISATIONS) - 1)
-    pasteurisation_idx = min(max(pasteurisation_idx, 0), len(BOOLEAN_SETTINGS) - 1)
-    nan_handling_idx = min(max(nan_handling_idx, 0), len(BOOLEAN_SETTINGS) - 1)
 
+def decode_int(raw_value, lower, upper):
+    return int(round(decode_float(raw_value, lower, upper)))
+
+
+def decode_category(raw_value, categories):
+    if not categories:
+        raise ValueError("categories must not be empty.")
+    idx = min(int(clip_unit(raw_value) * len(categories)), len(categories) - 1)
+    return categories[idx]
+
+
+def encode_float(value, lower, upper):
+    if upper == lower:
+        return 0.0
+    return clip_unit((float(value) - lower) / (upper - lower))
+
+
+def encode_category(value, categories):
+    if not categories:
+        raise ValueError("categories must not be empty.")
+    idx = categories.index(value)
+    return (idx + 0.5) / len(categories)
+
+
+def repair_candidate(decoded):
+    """Apply minimal decoded-candidate cleanup before building an alpha."""
+    repaired = dict(decoded)
+    repair_flags = []
+
+    rounded_truncation = round(float(repaired["truncation"]), 4)
+    if rounded_truncation != repaired["truncation"]:
+        repair_flags.append("rounded_truncation")
+    repaired["truncation"] = rounded_truncation
+
+    return repaired, repair_flags
+
+
+def params_from_decoded_candidate(decoded):
     return [
-        n, m, decay, truncation,
-        TEMPLATE_TYPES[template_idx],
-        PRICE_FIELDS[field_idx],
-        TRANSFORMS[transform_idx],
-        NEUTRALISATIONS[neutralisation_idx],
-        BOOLEAN_SETTINGS[pasteurisation_idx],
-        BOOLEAN_SETTINGS[nan_handling_idx],
+        decoded["n"],
+        decoded["m"],
+        decoded["decay"],
+        decoded["truncation"],
+        decoded["template_type"],
+        decoded["price_field"],
+        decoded["transform"],
+        decoded["neutralisation"],
+        decoded["pasteurisation"],
+        decoded["nan_handling"],
     ]
 
 
-def encode_params(params):
-    """Convert stored alpha parameters into numerical BO coordinates."""
+def decode_single_candidate(x_raw):
+    """Decode a latent [0, 1]^d vector into repaired BRAIN-ready candidate values."""
+    values = [float(value) for value in x_raw]
+    if len(values) != LATENT_DIM:
+        raise ValueError(f"Expected {LATENT_DIM} latent values, got {len(values)}.")
+
+    decoded = {
+        "n": decode_int(values[0], LOOKBACK_MIN, LOOKBACK_MAX),
+        "m": decode_int(values[1], LOOKBACK_MIN, LOOKBACK_MAX),
+        "decay": decode_int(values[2], DECAY_MIN, DECAY_MAX),
+        "truncation": decode_float(values[3], TRUNCATION_MIN, TRUNCATION_MAX),
+        "template_type": decode_category(values[4], TEMPLATE_TYPES),
+        "price_field": decode_category(values[5], PRICE_FIELDS),
+        "transform": decode_category(values[6], TRANSFORMS),
+        "neutralisation": decode_category(values[7], NEUTRALISATIONS),
+        "pasteurisation": decode_category(values[8], BOOLEAN_SETTINGS),
+        "nan_handling": decode_category(values[9], BOOLEAN_SETTINGS),
+    }
+
+    repaired, _ = repair_candidate(decoded)
+    return repaired
+
+
+def decode_params(x_raw):
+    """Convert a latent BoTorch candidate into the stored decoded params schema."""
+    return params_from_decoded_candidate(decode_single_candidate(x_raw))
+
+
+def encode_params_to_latent(params):
+    """Convert stored decoded params into approximate latent [0, 1] coordinates."""
     (
         n, m, decay, truncation, template_type, price_field, transform,
         neutralisation, pasteurisation, nan_handling,
     ) = canonicalise_params(params)
 
     return [
-        float(n),
-        float(m),
-        float(decay),
-        float(truncation),
-        float(TEMPLATE_TYPES.index(template_type)),
-        float(PRICE_FIELDS.index(price_field)),
-        float(TRANSFORMS.index(transform)),
-        float(NEUTRALISATIONS.index(neutralisation)),
-        float(BOOLEAN_SETTINGS.index(pasteurisation)),
-        float(BOOLEAN_SETTINGS.index(nan_handling)),
+        encode_float(n, LOOKBACK_MIN, LOOKBACK_MAX),
+        encode_float(m, LOOKBACK_MIN, LOOKBACK_MAX),
+        encode_float(decay, DECAY_MIN, DECAY_MAX),
+        encode_float(truncation, TRUNCATION_MIN, TRUNCATION_MAX),
+        encode_category(template_type, TEMPLATE_TYPES),
+        encode_category(price_field, PRICE_FIELDS),
+        encode_category(transform, TRANSFORMS),
+        encode_category(neutralisation, NEUTRALISATIONS),
+        encode_category(pasteurisation, BOOLEAN_SETTINGS),
+        encode_category(nan_handling, BOOLEAN_SETTINGS),
     ]
+
+
+def encode_params(params):
+    """Backward-compatible alias for latent BO coordinates."""
+    return encode_params_to_latent(params)
+
+
+def candidate_key(params):
+    return tuple(canonicalise_params(params))
 
 
 def apply_transform(expression, transform):
@@ -475,7 +543,7 @@ def load_existing_results(user, log_path=None, universe=FIXED_UNIVERSE, region=F
         try:
             params = canonicalise_params(row["params"])
             score = float(row["score"])
-            train_x.append(encode_params(params))
+            train_x.append(encode_params_to_latent(params))
             train_y.append([score])
         except (ValueError, TypeError, SyntaxError) as error:
             skipped_rows += 1
@@ -573,9 +641,9 @@ def build_candidate(params, user, universe=FIXED_UNIVERSE, batch_candidate_id=No
     }
 
 
-def suggest_one_candidate(user, universe, train_x, train_y, seed_threshold, used_params=None):
-    """Suggest one candidate and avoid duplicate params inside the current batch."""
-    used_params = set() if used_params is None else used_params
+def suggest_one_candidate(user, universe, train_x, train_y, seed_threshold, used_keys=None):
+    """Suggest one decoded candidate and avoid duplicate final settings."""
+    used_keys = set() if used_keys is None else used_keys
     use_botorch = train_x is not None and train_x.shape[0] >= seed_threshold
     last_candidate = None
 
@@ -592,7 +660,7 @@ def suggest_one_candidate(user, universe, train_x, train_y, seed_threshold, used
         )
         last_candidate = candidate
 
-        if tuple(candidate["params"]) not in used_params:
+        if candidate_key(candidate["params"]) not in used_keys:
             return candidate
 
     return last_candidate
@@ -707,26 +775,14 @@ def ask_user_for_metrics(params, user, universe=FIXED_UNIVERSE):
 
 
 def suggest_random_candidate():
-    candidate = torch.empty(10)
-    candidate[0] = torch.randint(3, 121, size=(1,)).item()
-    candidate[1] = torch.randint(3, 121, size=(1,)).item()
-    candidate[2] = torch.randint(1, 61, size=(1,)).item()
-    candidate[3] = torch.empty(1).uniform_(0.001, 0.20).item()
-    candidate[4] = torch.randint(0, len(TEMPLATE_TYPES), size=(1,)).item()
-    candidate[5] = torch.randint(0, len(PRICE_FIELDS), size=(1,)).item()
-    candidate[6] = torch.randint(0, len(TRANSFORMS), size=(1,)).item()
-    candidate[7] = torch.randint(0, len(NEUTRALISATIONS), size=(1,)).item()
-    candidate[8] = torch.randint(0, len(BOOLEAN_SETTINGS), size=(1,)).item()
-    candidate[9] = torch.randint(0, len(BOOLEAN_SETTINGS), size=(1,)).item()
-    return candidate
+    return torch.rand(LATENT_DIM)
 
 
 def suggest_botorch_candidate(train_x, train_y):
-    """Fit a GP model and suggest the next candidate using LogEI."""
-    train_x_norm = normalize(train_x, BOUNDS)
+    """Fit a GP model over latent [0, 1]^d coordinates and suggest the next candidate."""
     train_y_std = standardize(train_y)
 
-    model = SingleTaskGP(train_x_norm, train_y_std)
+    model = SingleTaskGP(train_x, train_y_std)
     mll = ExactMarginalLogLikelihood(model.likelihood, model)
     fit_gpytorch_mll(mll)
 
@@ -735,14 +791,13 @@ def suggest_botorch_candidate(train_x, train_y):
 
     candidate_norm, _ = optimize_acqf(
         acq_function=acqf,
-        bounds=torch.stack([torch.zeros(10), torch.ones(10)]),
+        bounds=LATENT_BOUNDS,
         q=1,
         num_restarts=10,
         raw_samples=128,
     )
 
-    candidate = unnormalize(candidate_norm.detach().squeeze(0), BOUNDS)
-    return candidate
+    return candidate_norm.detach().squeeze(0)
 
 
 def run_one_trial(user, universe=FIXED_UNIVERSE, batch=1, seed_threshold=50):
@@ -775,7 +830,13 @@ def run_one_trial(user, universe=FIXED_UNIVERSE, batch=1, seed_threshold=50):
         print("Using BoTorch LogExpectedImprovement candidates.")
 
     candidates = []
-    used_params = set()
+    used_keys = set()
+    for result in results:
+        try:
+            used_keys.add(candidate_key(result["params"]))
+        except (KeyError, ValueError, TypeError, SyntaxError):
+            pass
+
     for index in range(1, batch + 1):
         candidate = suggest_one_candidate(
             user=user_slug,
@@ -783,10 +844,10 @@ def run_one_trial(user, universe=FIXED_UNIVERSE, batch=1, seed_threshold=50):
             train_x=train_x,
             train_y=train_y,
             seed_threshold=seed_threshold,
-            used_params=used_params,
+            used_keys=used_keys,
         )
         candidate["batch_candidate_id"] = index
-        used_params.add(tuple(candidate["params"]))
+        used_keys.add(candidate_key(candidate["params"]))
         candidates.append(candidate)
 
     for index, candidate in enumerate(candidates, start=1):
