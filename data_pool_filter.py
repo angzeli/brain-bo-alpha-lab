@@ -17,6 +17,8 @@ PARAM_COLUMNS = [
     "neutralisation",
     "pasteurisation",
     "nan_handling",
+    "direction",
+    "smoothing_window",
 ]
 
 LEGACY_TEMPLATE_MAP = {
@@ -87,6 +89,8 @@ def _params_to_columns(value):
                 pd.NA,
                 pd.NA,
                 pd.NA,
+                1,
+                5,
             ]
             return dict(zip(PARAM_COLUMNS, values))
 
@@ -105,10 +109,12 @@ def _params_to_columns(value):
                 _normalise_neutralisation(params[7]),
                 "On",
                 "Off",
+                1,
+                5,
             ]
             return dict(zip(PARAM_COLUMNS, values))
 
-        # Current 10-parameter schema without delay.
+        # Previous 10-parameter schema without delay, direction, or smoothing.
         if len(params) == 10:
             values = [
                 int(params[0]),
@@ -121,6 +127,8 @@ def _params_to_columns(value):
                 str(params[7]),
                 str(params[8]),
                 str(params[9]),
+                1,
+                5,
             ]
             return dict(zip(PARAM_COLUMNS, values))
 
@@ -139,6 +147,26 @@ def _params_to_columns(value):
                 str(params[8]),
                 str(params[9]),
                 str(params[10]),
+                1,
+                5,
+            ]
+            return dict(zip(PARAM_COLUMNS, values))
+
+        # Current 12-parameter schema with direction and smoothing window.
+        if len(params) == 12:
+            values = [
+                int(params[0]),
+                int(params[1]),
+                int(params[2]),
+                float(params[3]),
+                _canonical_template_type(params[4]),
+                str(params[5]),
+                str(params[6]),
+                str(params[7]),
+                str(params[8]),
+                str(params[9]),
+                int(params[10]),
+                int(params[11]),
             ]
             return dict(zip(PARAM_COLUMNS, values))
 
@@ -158,6 +186,8 @@ def _params_to_columns(value):
                 str(params[7]),
                 str(params[9]),
                 str(params[10]),
+                1,
+                5,
             ]
             return dict(zip(PARAM_COLUMNS, values))
     except (ValueError, TypeError):

@@ -108,12 +108,14 @@ The optimiser currently searches over:
     neutralisation,    # None / Market / Sector / Industry / Subindustry
     pasteurisation,    # On / Off
     nan_handling,      # On / Off
+    direction,         # 1 / -1 signal direction before transform
+    smoothing_window,  # 3 / 5 / 10 for smoothed templates
 ]
 ```
 
 The region is currently fixed to `USA`, Delay is currently fixed to `1`, and each universe is treated as a separate campaign.
 
-Current template families include price momentum/reversion, low volatility, volume ratio/surprise, range position, short/long trend, price-volume momentum/reversal, and intraday position.
+Current template families include price momentum/reversion, low volatility, volume ratio/surprise, inverse volume ratio, range position, time-series rank, short/long trend, price-volume momentum/reversal, smoothed price and price-volume variants, high/low momentum spread, close-to-VWAP momentum, and intraday position.
 
 ---
 
