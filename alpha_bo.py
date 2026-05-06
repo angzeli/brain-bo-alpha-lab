@@ -1,4 +1,5 @@
 import ast
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -506,14 +507,109 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
 
 
 def compute_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, margin_permyriad):
-    return (
-        fitness
-        + 0.5 * sharpe
-        + 0.02 * returns_pct
+    sharpe = max(min(sharpe, 4.0), -4.0)
+    fitness = max(min(fitness, 5.0), -2.0)
+    returns_pct = max(min(returns_pct, 80.0), -80.0)
+    turnover_pct = max(min(turnover_pct, 200.0), 0.0)
+    drawdown_abs = max(min(abs(drawdown_pct), 80.0), 0.0)
+    margin_permyriad = max(min(margin_permyriad, 50.0), -50.0)
+
+    score = (
+        1.00 * fitness
+        + 0.50 * sharpe
+        + 0.03 * returns_pct
         + 0.05 * margin_permyriad
-        - 0.002 * turnover_pct
-        - 0.02 * abs(drawdown_pct)
+        - 0.003 * turnover_pct
+        - 0.03 * drawdown_abs
     )
+
+    return float(score)
+
+
+def recompute_scores_in_csv(csv_path, output_csv=None, backup=True, backup_path=None, dry_run=False):
+    """
+    Recompute saved score values for rows with the full Aggregate Data metric set.
+
+    This is an explicit one-time migration helper. Normal BO resume/loading still
+    uses the score already saved in the CSV and does not call this function.
+    """
+    csv_path = Path(csv_path)
+    output_csv = csv_path if output_csv is None else Path(output_csv)
+
+    required_metrics = [
+        "sharpe",
+        "turnover_pct",
+        "fitness",
+        "returns_pct",
+        "drawdown_pct",
+        "margin_permyriad",
+    ]
+
+    df = pd.read_csv(csv_path)
+    missing_columns = [column for column in required_metrics if column not in df.columns]
+    if missing_columns:
+        raise ValueError(
+            f"{csv_path} is missing metric column(s) needed for score recompute: {missing_columns}"
+        )
+
+    numeric_metrics = {
+        column: pd.to_numeric(df[column], errors="coerce")
+        for column in required_metrics
+    }
+    eligible_mask = pd.DataFrame(numeric_metrics).notna().all(axis=1)
+
+    updated_scores = []
+    for idx in df.index[eligible_mask]:
+        updated_scores.append(
+            compute_score(
+                sharpe=float(numeric_metrics["sharpe"].loc[idx]),
+                turnover_pct=float(numeric_metrics["turnover_pct"].loc[idx]),
+                fitness=float(numeric_metrics["fitness"].loc[idx]),
+                returns_pct=float(numeric_metrics["returns_pct"].loc[idx]),
+                drawdown_pct=float(numeric_metrics["drawdown_pct"].loc[idx]),
+                margin_permyriad=float(numeric_metrics["margin_permyriad"].loc[idx]),
+            )
+        )
+
+    updated_df = df.copy()
+    if "score" not in updated_df.columns:
+        updated_df["score"] = pd.NA
+    updated_df.loc[eligible_mask, "score"] = updated_scores
+
+    resolved_backup_path = None
+    if not dry_run:
+        output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+        if backup and output_csv.resolve() == csv_path.resolve():
+            if backup_path is None:
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+                backup_path = csv_path.with_name(f"{csv_path.stem}.backup_{timestamp}{csv_path.suffix}")
+            resolved_backup_path = Path(backup_path)
+            resolved_backup_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(csv_path, resolved_backup_path)
+
+        updated_df.to_csv(output_csv, index=False)
+
+    summary = {
+        "input_csv": str(csv_path),
+        "output_csv": str(output_csv),
+        "backup_path": None if resolved_backup_path is None else str(resolved_backup_path),
+        "rows_total": int(len(df)),
+        "rows_updated": int(eligible_mask.sum()),
+        "rows_skipped": int((~eligible_mask).sum()),
+        "dry_run": bool(dry_run),
+    }
+
+    print(
+        f"Recomputed scores for {summary['rows_updated']} row(s); "
+        f"skipped {summary['rows_skipped']} row(s)."
+    )
+    if resolved_backup_path is not None:
+        print(f"Backup saved to: {resolved_backup_path}")
+    if not dry_run:
+        print(f"Updated CSV saved to: {output_csv}")
+
+    return summary
 
 
 def load_existing_results(user, log_path=None, universe=FIXED_UNIVERSE, region=FIXED_REGION):
