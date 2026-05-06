@@ -40,6 +40,7 @@ brain_bo_*.csv
 brain_bo_log.csv
 combined_brain_bo_*.csv
 top_trials_*.csv
+subset_*.csv
 
 # Optional generated outputs
 outputs/
