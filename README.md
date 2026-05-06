@@ -40,6 +40,8 @@ brain-bo-alpha-lab/
 ├── alpha.ipynb
 ├── csv_combiner.py
 ├── combine_csv.ipynb
+├── data_pool_filter.py
+├── filter_data_pool.ipynb
 ├── LICENSE
 └── README.md
 ```
@@ -51,8 +53,8 @@ brain-bo-alpha-lab/
 For detailed setup and usage instructions, see:
 
 - [`docs/quick_start.md`](docs/quick_start.md) — beginner-friendly guide for running the workflow.
-- [`docs/brain_alpha_parameters_and_checks.md`](docs/brain_alpha_parameters_and_checks.md) — explains BRAIN metrics, pass/fail checks, and how to record simulation results.
 - [`docs/github_terminal_workflow.md`](docs/github_terminal_workflow.md) — practical Git/GitHub terminal commands for collaboration.
+- [`docs/brain_alpha_parameters_and_checks.md`](docs/brain_alpha_parameters_and_checks.md) — explains BRAIN metrics, ratings, checks, and how to record simulation results.
 
 ---
 
@@ -122,6 +124,39 @@ This means the workflow can be stopped and resumed safely. If the notebook or Py
 Pressing Enter on an empty metric prompt cancels the current trial without writing a CSV row.
 
 CSV logs are excluded from version control because they may contain private alpha expressions and performance results.
+
+---
+
+## 🧹 Data Pool Filtering
+
+After raw logs are combined into a master data pool, use `filter_data_pool.ipynb` to create focused subsets for later analysis.
+
+Typical data flow:
+
+```text
+Raw personal logs
+    ↓
+combine_csv.ipynb creates date-stamped combined master data pools
+    ↓
+filter_data_pool.ipynb creates timestamped filtered subset CSVs
+    ↓
+analysis notebooks use those filtered subsets
+```
+
+Example use cases:
+
+- Market-neutralised runs only
+- TOP3000 runs only
+- one template family only
+- Average-or-better BRAIN ratings only
+
+Generated subset files are timestamped, for example:
+
+```text
+subset_neutralisation_market_2026-05-06_203512.csv
+```
+
+These generated subset files are ignored by Git and should not be committed unless intentionally shared.
 
 ---
 
