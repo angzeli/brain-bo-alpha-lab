@@ -20,19 +20,43 @@ Submission remains a separate manual action on BRAIN.
 
 ## 2. Aggregate Data metrics we record
 
-Our Python prompt asks for BRAIN Aggregate Data metrics in this order:
+Our normal Python workflow asks you to paste the TRAIN Aggregate Data block:
 
 ```text
-Sharpe:
-Turnover (%):
-Fitness:
-Returns (%):
-Drawdown (%):
-Margin (‱):
+Paste TRAIN Aggregate Data block. Type DONE on a new line when finished.
+```
+
+Python parses these metrics from the pasted block:
+
+- Sharpe
+- Turnover (%)
+- Fitness
+- Returns (%)
+- Drawdown (%)
+- Margin (‱)
+
+After parsing, Python shows the values back to you for confirmation. Then it asks separately for:
+
+```text
 BRAIN rating:
 ```
 
-Enter numbers only. Do not type `%` or `‱` into numeric fields.
+The parser tolerates `%` and `‱` symbols in the pasted BRAIN text. If you ever type a value manually, type numbers only and do not include units.
+
+New CSV rows store these values in explicit TRAIN columns:
+
+- `train_sharpe`
+- `train_turnover_pct`
+- `train_fitness`
+- `train_returns_pct`
+- `train_drawdown_pct`
+- `train_margin_permyriad`
+
+The original pasted TRAIN matrix is also stored in `train_aggregate_data`. If TEST or IS metrics are added later, they use matching `test_*` and `is_*` columns, plus `test_aggregate_data` and `is_aggregate_data` for the raw pasted text.
+
+The project computes `train_score`, `test_score`, and `is_score` when the matching period metrics exist. The active Bayesian optimisation target is `bo_score`. When TEST metrics exist, `bo_score` uses both TRAIN and TEST and penalises train-test collapse. When TEST metrics are missing, `bo_score` falls back to `train_score`.
+
+Older CSV rows may still have generic columns such as `sharpe`, `fitness`, and `turnover_pct`. The code treats those generic columns as TRAIN metrics when loading old logs.
 
 ### Sharpe
 
@@ -163,6 +187,7 @@ Users can divide IS into Train and Test using simulation settings:
 
 - Train period: used for development.
 - Test period: used for validation.
+- IS period: useful as a visible overall sanity check.
 
 The latest two years of data are hidden as Semi-OS for scoring/testing. OS is also hidden from the user and helps evaluate robustness.
 

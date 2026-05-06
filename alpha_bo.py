@@ -1,4 +1,5 @@
 import ast
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -45,20 +46,50 @@ CSV_COLUMN_ORDER = [
     "region",
     "universe",
     "batch_candidate_id",
+
     "alpha_name",
     "alpha_category",
     "alpha_description",
     "alpha",
     "settings",
     "params",
-    "sharpe",
-    "turnover_pct",
-    "fitness",
-    "returns_pct",
-    "drawdown_pct",
-    "margin_permyriad",
-    "brain_rating",
+
+    "train_sharpe",
+    "train_turnover_pct",
+    "train_fitness",
+    "train_returns_pct",
+    "train_drawdown_pct",
+    "train_margin_permyriad",
+    "train_aggregate_data",
+    "train_score",
+
+    "test_sharpe",
+    "test_turnover_pct",
+    "test_fitness",
+    "test_returns_pct",
+    "test_drawdown_pct",
+    "test_margin_permyriad",
+    "test_aggregate_data",
+    "test_score",
+
+    "is_sharpe",
+    "is_turnover_pct",
+    "is_fitness",
+    "is_returns_pct",
+    "is_drawdown_pct",
+    "is_margin_permyriad",
+    "is_aggregate_data",
+    "is_score",
+
+    "bo_score",
     "score",
+    "brain_rating",
+
+    "latent_x",
+    "source_file",
+    "source_region",
+    "source_universe",
+    "source_user",
 ]
 
 TEMPLATE_CATEGORY_MAP = {
@@ -108,6 +139,27 @@ BRAIN_RATING_ALIASES = {
 STOP_BATCH = object()
 MAX_CANDIDATE_RETRIES = 20
 LATENT_DIM = 10
+AGGREGATE_DATA_FIELDS = {
+    "sharpe": "Sharpe",
+    "turnover_pct": "Turnover",
+    "fitness": "Fitness",
+    "returns_pct": "Returns",
+    "drawdown_pct": "Drawdown",
+    "margin_permyriad": "Margin",
+}
+PERIODS = ("train", "test", "is")
+PERIOD_SCORE_COLUMNS = {
+    "train": "train_score",
+    "test": "test_score",
+    "is": "is_score",
+}
+PERIOD_AGGREGATE_DATA_COLUMNS = {
+    "train": "train_aggregate_data",
+    "test": "test_aggregate_data",
+    "is": "is_aggregate_data",
+}
+LEGACY_METRIC_COLUMNS = list(AGGREGATE_DATA_FIELDS)
+NUMBER_PATTERN = r"[-+]?(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)"
 
 LOOKBACK_MIN = 3
 LOOKBACK_MAX = 120
@@ -506,7 +558,7 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
     }
 
 
-def compute_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, margin_permyriad):
+def compute_period_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, margin_permyriad):
     sharpe = max(min(sharpe, 4.0), -4.0)
     fitness = max(min(fitness, 5.0), -2.0)
     returns_pct = max(min(returns_pct, 80.0), -80.0)
@@ -526,55 +578,166 @@ def compute_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, marg
     return float(score)
 
 
+def compute_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, margin_permyriad):
+    """Backward-compatible alias for the period-level score."""
+    return compute_period_score(
+        sharpe=sharpe,
+        turnover_pct=turnover_pct,
+        fitness=fitness,
+        returns_pct=returns_pct,
+        drawdown_pct=drawdown_pct,
+        margin_permyriad=margin_permyriad,
+    )
+
+
+def compute_bo_score(train_score=None, test_score=None):
+    """Return the active BO target from TRAIN/TEST scores."""
+    train_score = _float_or_none(train_score)
+    test_score = _float_or_none(test_score)
+
+    if train_score is None:
+        return None
+
+    if test_score is None:
+        return float(train_score)
+
+    collapse_penalty = 0.5 * max(0.0, train_score - test_score)
+    return float(0.4 * train_score + 0.6 * test_score - collapse_penalty)
+
+
+def _float_or_none(value):
+    try:
+        if pd.isna(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def period_metric_column(period, metric):
+    return f"{period}_{metric}"
+
+
+def period_aggregate_data_column(period):
+    period = str(period).strip().lower()
+    if period not in PERIODS:
+        raise ValueError(f"Unsupported period: {period}. Choose from {PERIODS}.")
+    return PERIOD_AGGREGATE_DATA_COLUMNS[period]
+
+
+def add_period_prefix(metrics, period):
+    return {
+        period_metric_column(period, metric): value
+        for metric, value in metrics.items()
+    }
+
+
+def period_metrics_from_row(row, period):
+    metrics = {}
+    for metric in LEGACY_METRIC_COLUMNS:
+        value = _float_or_none(row.get(period_metric_column(period, metric)))
+        if value is None:
+            return None
+        metrics[metric] = value
+    return metrics
+
+
+def compute_period_score_from_row(row, period):
+    metrics = period_metrics_from_row(row, period)
+    if metrics is None:
+        return None
+    return compute_period_score(**metrics)
+
+
+def recompute_scores_for_row(row, overwrite=False):
+    """Return a copy of row with missing period scores and bo_score filled."""
+    updated = row.copy()
+
+    for period, score_column in PERIOD_SCORE_COLUMNS.items():
+        if overwrite or _float_or_none(updated.get(score_column)) is None:
+            period_score = compute_period_score_from_row(updated, period)
+            if period_score is not None:
+                updated[score_column] = period_score
+
+    if overwrite or _float_or_none(updated.get("bo_score")) is None:
+        train_score = _float_or_none(updated.get("train_score"))
+        test_score = _float_or_none(updated.get("test_score"))
+        legacy_score = _float_or_none(updated.get("score"))
+
+        if train_score is not None and test_score is not None:
+            updated["bo_score"] = compute_bo_score(train_score=train_score, test_score=test_score)
+        elif not overwrite and legacy_score is not None:
+            updated["bo_score"] = float(updated["score"])
+        elif train_score is not None:
+            updated["bo_score"] = compute_bo_score(train_score=train_score, test_score=None)
+        elif legacy_score is not None:
+            updated["bo_score"] = float(updated["score"])
+
+    return updated
+
+
+def ensure_period_metric_columns(df):
+    """
+    Return a copy with legacy generic metrics treated as TRAIN metrics.
+
+    This helper does not overwrite old `score`; it fills explicit period columns
+    and derived scores only where they are missing.
+    """
+    df = df.copy()
+
+    for metric in LEGACY_METRIC_COLUMNS:
+        train_column = period_metric_column("train", metric)
+        if train_column not in df.columns and metric in df.columns:
+            df[train_column] = df[metric]
+        elif train_column not in df.columns:
+            df[train_column] = pd.NA
+        elif metric in df.columns:
+            df[train_column] = df[train_column].combine_first(df[metric])
+
+    for period in PERIODS:
+        for metric in LEGACY_METRIC_COLUMNS:
+            column = period_metric_column(period, metric)
+            if column not in df.columns:
+                df[column] = pd.NA
+        aggregate_data_column = period_aggregate_data_column(period)
+        if aggregate_data_column not in df.columns:
+            df[aggregate_data_column] = pd.NA
+        score_column = PERIOD_SCORE_COLUMNS[period]
+        if score_column not in df.columns:
+            df[score_column] = pd.NA
+
+    if "bo_score" not in df.columns:
+        df["bo_score"] = pd.NA
+
+    updated_rows = [recompute_scores_for_row(row) for _, row in df.iterrows()]
+    return pd.DataFrame(updated_rows, columns=df.columns)
+
+
+def get_bo_training_score(row):
+    """Return the preferred saved target for BO training."""
+    for column in ("bo_score", "score", "train_score"):
+        value = _float_or_none(row.get(column))
+        if value is not None:
+            return value
+    return None
+
+
 def recompute_scores_in_csv(csv_path, output_csv=None, backup=True, backup_path=None, dry_run=False):
     """
-    Recompute saved score values for rows with the full Aggregate Data metric set.
+    Fill period-specific metric and score columns without overwriting legacy score.
 
-    This is an explicit one-time migration helper. Normal BO resume/loading still
-    uses the score already saved in the CSV and does not call this function.
+    This is an explicit one-time migration helper. It treats old generic metrics
+    as TRAIN metrics and computes train_score/test_score/is_score/bo_score where
+    possible. The legacy `score` column is preserved.
     """
     csv_path = Path(csv_path)
     output_csv = csv_path if output_csv is None else Path(output_csv)
 
-    required_metrics = [
-        "sharpe",
-        "turnover_pct",
-        "fitness",
-        "returns_pct",
-        "drawdown_pct",
-        "margin_permyriad",
-    ]
-
     df = pd.read_csv(csv_path)
-    missing_columns = [column for column in required_metrics if column not in df.columns]
-    if missing_columns:
-        raise ValueError(
-            f"{csv_path} is missing metric column(s) needed for score recompute: {missing_columns}"
-        )
-
-    numeric_metrics = {
-        column: pd.to_numeric(df[column], errors="coerce")
-        for column in required_metrics
-    }
-    eligible_mask = pd.DataFrame(numeric_metrics).notna().all(axis=1)
-
-    updated_scores = []
-    for idx in df.index[eligible_mask]:
-        updated_scores.append(
-            compute_score(
-                sharpe=float(numeric_metrics["sharpe"].loc[idx]),
-                turnover_pct=float(numeric_metrics["turnover_pct"].loc[idx]),
-                fitness=float(numeric_metrics["fitness"].loc[idx]),
-                returns_pct=float(numeric_metrics["returns_pct"].loc[idx]),
-                drawdown_pct=float(numeric_metrics["drawdown_pct"].loc[idx]),
-                margin_permyriad=float(numeric_metrics["margin_permyriad"].loc[idx]),
-            )
-        )
-
-    updated_df = df.copy()
-    if "score" not in updated_df.columns:
-        updated_df["score"] = pd.NA
-    updated_df.loc[eligible_mask, "score"] = updated_scores
+    updated_df = ensure_period_metric_columns(df)
+    train_score_present = pd.to_numeric(updated_df["train_score"], errors="coerce").notna()
+    bo_score_present = pd.to_numeric(updated_df["bo_score"], errors="coerce").notna()
+    updated_df = order_result_columns(updated_df)
 
     resolved_backup_path = None
     if not dry_run:
@@ -595,14 +758,15 @@ def recompute_scores_in_csv(csv_path, output_csv=None, backup=True, backup_path=
         "output_csv": str(output_csv),
         "backup_path": None if resolved_backup_path is None else str(resolved_backup_path),
         "rows_total": int(len(df)),
-        "rows_updated": int(eligible_mask.sum()),
-        "rows_skipped": int((~eligible_mask).sum()),
+        "rows_with_train_score": int(train_score_present.sum()),
+        "rows_with_bo_score": int(bo_score_present.sum()),
+        "rows_without_bo_score": int((~bo_score_present).sum()),
         "dry_run": bool(dry_run),
     }
 
     print(
-        f"Recomputed scores for {summary['rows_updated']} row(s); "
-        f"skipped {summary['rows_skipped']} row(s)."
+        f"Prepared period scores for {summary['rows_with_train_score']} row(s); "
+        f"{summary['rows_with_bo_score']} row(s) have bo_score."
     )
     if resolved_backup_path is not None:
         print(f"Backup saved to: {resolved_backup_path}")
@@ -626,7 +790,9 @@ def load_existing_results(user, log_path=None, universe=FIXED_UNIVERSE, region=F
     if df.empty:
         return [], None, None
 
-    missing_columns = {"params", "score"} - set(df.columns)
+    df = ensure_period_metric_columns(df)
+
+    missing_columns = {"params"} - set(df.columns)
     if missing_columns:
         raise ValueError(f"{log_path} is missing required column(s): {sorted(missing_columns)}")
 
@@ -638,7 +804,9 @@ def load_existing_results(user, log_path=None, universe=FIXED_UNIVERSE, region=F
     for _, row in df.iterrows():
         try:
             params = canonicalise_params(row["params"])
-            score = float(row["score"])
+            score = get_bo_training_score(row)
+            if score is None:
+                raise ValueError("missing usable bo_score, score, or train_score")
             train_x.append(encode_params_to_latent(params))
             train_y.append([score])
         except (ValueError, TypeError, SyntaxError) as error:
@@ -701,6 +869,119 @@ def ask_float(prompt, allow_stop=False):
             print(f"Please enter a number, or press Enter to skip this candidate{stop_text}.")
 
 
+def read_multiline_block(prompt, end_token="DONE", allow_stop=False):
+    """Read pasted text until end_token. Return None to cancel, STOP_BATCH to stop a batch."""
+    print(prompt)
+    lines = []
+    end_token = end_token.strip().lower()
+
+    while True:
+        line = input()
+        stripped = line.strip()
+        lowered = stripped.lower()
+
+        if lowered == end_token:
+            break
+        if lowered == "cancel":
+            return None
+        if allow_stop and lowered == "stop":
+            return STOP_BATCH
+
+        lines.append(line)
+
+    text = "\n".join(lines).strip()
+    if not text:
+        return None
+
+    return text
+
+
+def _parse_number(value):
+    return float(value.replace(",", ""))
+
+
+def parse_aggregate_data_block(text):
+    """Parse a pasted BRAIN Aggregate Data block into numeric metric values."""
+    parsed = {}
+    missing = []
+
+    for output_key, label in AGGREGATE_DATA_FIELDS.items():
+        pattern = rf"\b{re.escape(label)}\b(?:\s*\([^)]*\))?\s*:?\s*({NUMBER_PATTERN})\s*[%‱]?"
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match is None:
+            missing.append(label)
+            continue
+        parsed[output_key] = _parse_number(match.group(1))
+
+    if missing:
+        raise ValueError(f"Could not find required Aggregate Data metric(s): {', '.join(missing)}")
+
+    return parsed
+
+
+def ask_yes_no(prompt, allow_stop=False):
+    """Ask for a yes/no confirmation. Empty input means no."""
+    while True:
+        value = input(prompt).strip().lower()
+        if value == "":
+            return False
+        if allow_stop and value == "stop":
+            return STOP_BATCH
+        if value in {"y", "yes"}:
+            return True
+        if value in {"n", "no"}:
+            return False
+        stop_text = ", or type stop to end the batch" if allow_stop else ""
+        print(f"Please enter y/n{stop_text}.")
+
+
+def print_parsed_aggregate_metrics(metrics, period=None):
+    label = "" if period is None else f" {period.upper()}"
+    print(f"\nParsed{label} Aggregate Data metrics:")
+    print(f"Sharpe:        {metrics['sharpe']}")
+    print(f"Turnover (%):  {metrics['turnover_pct']}")
+    print(f"Fitness:       {metrics['fitness']}")
+    print(f"Returns (%):   {metrics['returns_pct']}")
+    print(f"Drawdown (%):  {metrics['drawdown_pct']}")
+    print(f"Margin (‱):    {metrics['margin_permyriad']}")
+
+
+def ask_aggregate_data_metrics(period="train", allow_stop=False, include_raw=False):
+    """Ask for a pasted Aggregate Data block and return parsed metrics."""
+    period_label = period.upper()
+    prompt = (
+        f"Paste {period_label} Aggregate Data block. Type DONE on a new line when finished.\n"
+        "Type cancel to skip this candidate"
+        + (" or stop to end the remaining batch" if allow_stop else "")
+        + "."
+    )
+
+    while True:
+        block = read_multiline_block(prompt, allow_stop=allow_stop)
+        if block is STOP_BATCH:
+            return STOP_BATCH
+        if block is None:
+            return None
+
+        try:
+            metrics = parse_aggregate_data_block(block)
+        except ValueError as error:
+            print(f"\nCould not parse Aggregate Data block: {error}")
+            print("Please paste the block again, or type cancel then DONE to skip this candidate.")
+            continue
+
+        print_parsed_aggregate_metrics(metrics, period=period)
+        confirmed = ask_yes_no("Use these parsed metrics? y/n: ", allow_stop=allow_stop)
+        if confirmed is STOP_BATCH:
+            return STOP_BATCH
+        if confirmed:
+            if include_raw:
+                return metrics, block.strip()
+            return metrics
+
+        print("Okay, paste the Aggregate Data block again.")
+
+
 def ask_brain_rating(prompt, allow_stop=False):
     """Ask for a BRAIN rating. Empty input skips the candidate; `stop` ends a batch."""
     allowed_text = " / ".join(BRAIN_RATINGS)
@@ -735,6 +1016,25 @@ def build_candidate(params, user, universe=FIXED_UNIVERSE, batch_candidate_id=No
         "batch_candidate_id": batch_candidate_id,
         "params": canonicalise_params(params),
     }
+
+
+def score_period_metrics(metrics):
+    return compute_period_score(
+        sharpe=metrics["sharpe"],
+        turnover_pct=metrics["turnover_pct"],
+        fitness=metrics["fitness"],
+        returns_pct=metrics["returns_pct"],
+        drawdown_pct=metrics["drawdown_pct"],
+        margin_permyriad=metrics["margin_permyriad"],
+    )
+
+
+def build_period_result_fields(metrics, period, aggregate_data=None):
+    fields = add_period_prefix(metrics, period)
+    if aggregate_data is not None:
+        fields[period_aggregate_data_column(period)] = str(aggregate_data).strip()
+    fields[PERIOD_SCORE_COLUMNS[period]] = score_period_metrics(metrics)
+    return fields
 
 
 def suggest_one_candidate(user, universe, train_x, train_y, seed_threshold, used_keys=None):
@@ -789,50 +1089,63 @@ def print_candidate(candidate, index=None, batch=None):
 def collect_metrics_for_candidate(candidate, index=None, batch=None, allow_stop=False):
     """Collect Aggregate Data metrics and return a completed result dict."""
     if index is None or batch is None:
-        print("\nAfter the simulation finishes, enter the Aggregate Data metrics:")
-        print("Press Enter on an empty prompt to cancel without saving this trial.")
+        print("\nAfter the simulation finishes, enter the TRAIN Aggregate Data metrics:")
+        print("Paste the copied TRAIN Aggregate Data block below.")
     else:
         print(f"\nEnter metrics for candidate {index}/{batch}: {candidate['alpha_name']}")
         print("\nAlpha expression:")
         print(candidate["alpha"])
         stop_hint = " Type stop at any prompt to end the remaining batch." if allow_stop else ""
-        print(f"Press Enter on an empty prompt to skip this candidate without saving it.{stop_hint}")
+        print(f"Paste the copied TRAIN Aggregate Data block below.{stop_hint}")
 
-    sharpe = ask_float("Sharpe: ", allow_stop=allow_stop)
-    if sharpe is STOP_BATCH:
+    train_entry = ask_aggregate_data_metrics(period="train", allow_stop=allow_stop, include_raw=True)
+    if train_entry is STOP_BATCH:
         return STOP_BATCH
-    if sharpe is None:
+    if train_entry is None:
         return None
+    train_metrics, train_aggregate_data = train_entry
 
-    turnover_pct = ask_float("Turnover (%): ", allow_stop=allow_stop)
-    if turnover_pct is STOP_BATCH:
-        return STOP_BATCH
-    if turnover_pct is None:
-        return None
+    result_fields = build_period_result_fields(
+        train_metrics,
+        "train",
+        aggregate_data=train_aggregate_data,
+    )
 
-    fitness = ask_float("Fitness: ", allow_stop=allow_stop)
-    if fitness is STOP_BATCH:
+    add_test = ask_yes_no("Add TEST metrics now? y/n: ", allow_stop=allow_stop)
+    if add_test is STOP_BATCH:
         return STOP_BATCH
-    if fitness is None:
-        return None
+    if add_test:
+        test_entry = ask_aggregate_data_metrics(period="test", allow_stop=allow_stop, include_raw=True)
+        if test_entry is STOP_BATCH:
+            return STOP_BATCH
+        if test_entry is None:
+            return None
+        test_metrics, test_aggregate_data = test_entry
+        result_fields.update(
+            build_period_result_fields(
+                test_metrics,
+                "test",
+                aggregate_data=test_aggregate_data,
+            )
+        )
 
-    returns_pct = ask_float("Returns (%): ", allow_stop=allow_stop)
-    if returns_pct is STOP_BATCH:
+    add_is = ask_yes_no("Add IS metrics now? y/n: ", allow_stop=allow_stop)
+    if add_is is STOP_BATCH:
         return STOP_BATCH
-    if returns_pct is None:
-        return None
-
-    drawdown_pct = ask_float("Drawdown (%): ", allow_stop=allow_stop)
-    if drawdown_pct is STOP_BATCH:
-        return STOP_BATCH
-    if drawdown_pct is None:
-        return None
-
-    margin_permyriad = ask_float("Margin (‱): ", allow_stop=allow_stop)
-    if margin_permyriad is STOP_BATCH:
-        return STOP_BATCH
-    if margin_permyriad is None:
-        return None
+    if add_is:
+        is_entry = ask_aggregate_data_metrics(period="is", allow_stop=allow_stop, include_raw=True)
+        if is_entry is STOP_BATCH:
+            return STOP_BATCH
+        if is_entry is None:
+            return None
+        is_metrics, is_aggregate_data = is_entry
+        result_fields.update(
+            build_period_result_fields(
+                is_metrics,
+                "is",
+                aggregate_data=is_aggregate_data,
+            )
+        )
 
     rating_prompt = "BRAIN rating [Spectacular / Excellent / Good / Average / Needs Improvement]: "
     brain_rating = ask_brain_rating(rating_prompt, allow_stop=allow_stop)
@@ -841,25 +1154,16 @@ def collect_metrics_for_candidate(candidate, index=None, batch=None, allow_stop=
     if brain_rating is None:
         return None
 
-    score = compute_score(
-        sharpe=sharpe,
-        turnover_pct=turnover_pct,
-        fitness=fitness,
-        returns_pct=returns_pct,
-        drawdown_pct=drawdown_pct,
-        margin_permyriad=margin_permyriad,
+    bo_score = compute_bo_score(
+        train_score=result_fields.get("train_score"),
+        test_score=result_fields.get("test_score"),
     )
+    result_fields["bo_score"] = bo_score
 
     return {
         **candidate,
-        "sharpe": sharpe,
-        "turnover_pct": turnover_pct,
-        "fitness": fitness,
-        "returns_pct": returns_pct,
-        "drawdown_pct": drawdown_pct,
-        "margin_permyriad": margin_permyriad,
+        **result_fields,
         "brain_rating": brain_rating,
-        "score": score,
     }
 
 

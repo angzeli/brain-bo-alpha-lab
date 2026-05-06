@@ -58,15 +58,21 @@ Copy these into BRAIN and run the simulation manually.
 
 After the BRAIN simulation finishes, Python will ask for:
 
-    Sharpe:
-    Turnover (%):
-    Fitness:
-    Returns (%):
-    Drawdown (%):
-    Margin (‱):
-    BRAIN rating:
+    Paste TRAIN Aggregate Data block. Type DONE on a new line when finished.
 
-Copy these values from BRAIN.
+Copy the BRAIN TRAIN Aggregate Data block and paste it into Python, then type:
+
+    DONE
+
+Python will parse Sharpe, Turnover, Fitness, Returns, Drawdown, and Margin from the pasted block. It will show the parsed values and ask you to confirm them.
+
+The saved row uses explicit TRAIN columns such as `train_sharpe`, `train_fitness`, and `train_score`. It also stores the original pasted block in `train_aggregate_data`. The active BO target is `bo_score`; for normal TRAIN-only rows, `bo_score` equals `train_score`.
+
+You can optionally add TEST or IS metrics later with `backfill_period_metrics.ipynb`. Those pasted blocks are saved as `test_aggregate_data` and `is_aggregate_data`. Old generic metric columns are treated as TRAIN metrics when logs are loaded.
+
+After that, enter the separate BRAIN rating prompt:
+
+    BRAIN rating:
 
 For the rating, enter the label shown by BRAIN, for example:
 
@@ -76,7 +82,7 @@ or:
 
     Needs Improvement
 
-If you press Enter on an empty metric prompt, the current trial is cancelled and no CSV row is saved.
+If you type `cancel`, or finish an empty block with `DONE`, the current trial is cancelled and no CSV row is saved.
 
 ## 4. Repeat
 

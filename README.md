@@ -42,6 +42,8 @@ brain-bo-alpha-lab/
 ├── combine_csv.ipynb
 ├── data_pool_filter.py
 ├── filter_data_pool.ipynb
+├── backfill_period_metrics.py
+├── backfill_period_metrics.ipynb
 ├── LICENSE
 └── README.md
 ```
@@ -78,7 +80,7 @@ This will:
 
 1. load the existing CSV log for the selected user and universe,
 2. suggest one candidate alpha with BRAIN-ready name, category, description, and settings,
-3. ask the user to enter the resulting Aggregate Data metrics,
+3. ask the user to paste the TRAIN Aggregate Data metrics,
 4. append the completed result to the correct CSV file.
 
 Each user/universe pair has its own independent log file. For example:
@@ -124,6 +126,26 @@ This means the workflow can be stopped and resumed safely. If the notebook or Py
 Pressing Enter on an empty metric prompt cancels the current trial without writing a CSV row.
 
 CSV logs are excluded from version control because they may contain private alpha expressions and performance results.
+
+---
+
+## 🧾 Period Metrics And BO Score
+
+New rows store BRAIN Aggregate Data metrics by visible period:
+
+- `train_*` columns for the default TRAIN block used during normal BO runs
+- optional `test_*` columns for validation metrics
+- optional `is_*` columns for visible In-Sample sanity checks
+
+The original pasted Aggregate Data text is also stored for each period when available: `train_aggregate_data`, `test_aggregate_data`, and `is_aggregate_data`. This keeps an audit trail next to the parsed numeric columns.
+
+Each period can have its own score: `train_score`, `test_score`, and `is_score`.
+
+The active BO target is `bo_score`. If TEST metrics exist, `bo_score` combines TRAIN and TEST with a penalty when TEST is much weaker than TRAIN. If TEST is missing, `bo_score` falls back to `train_score`.
+
+Older CSV rows with generic metric columns such as `sharpe`, `fitness`, and `turnover_pct` are treated as TRAIN metrics when loaded. The old `score` column is preserved for compatibility and used only as a fallback when `bo_score` is unavailable.
+
+Use `backfill_period_metrics.ipynb` to manually add TEST or IS metrics to promising old runs. This is a maintenance workflow, not an analysis notebook.
 
 ---
 
