@@ -58,11 +58,11 @@ Copy these into BRAIN and run the simulation manually.
 
 After the BRAIN simulation finishes, Python will ask for:
 
-    Paste TRAIN Aggregate Data block. Type DONE on a new line when finished.
+    Paste the copied BRAIN Aggregate Data block below, then press Enter.
 
-Copy the BRAIN TRAIN Aggregate Data block and paste it into Python, then type:
+Copy the BRAIN TRAIN Aggregate Data block and paste it into Python. If your notebook only captures the first line of a multi-line paste, use a compact one-line version instead:
 
-    DONE
+    Sharpe 0.88 Turnover 6.27% Fitness 1.45 Returns 33.97% Drawdown 66.71% Margin 108.38‱
 
 Python will parse Sharpe, Turnover, Fitness, Returns, Drawdown, and Margin from the pasted block. It will show the parsed values and ask you to confirm them.
 
@@ -82,7 +82,7 @@ or:
 
     Needs Improvement
 
-If you type `cancel`, or finish an empty block with `DONE`, the current trial is cancelled and no CSV row is saved.
+If you press Enter on empty input, or type `skip`, the current candidate is skipped and no CSV row is saved. In batch mode, type `stop` to end the remaining candidates.
 
 ## 4. Repeat
 

@@ -1,6 +1,7 @@
 import ast
 import re
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -974,29 +975,35 @@ def ask_float(prompt, allow_stop=False):
             print(f"Please enter a number, or press Enter to skip this candidate{stop_text}.")
 
 
-def read_multiline_block(prompt, end_token="DONE", allow_stop=False):
-    """Read pasted text until end_token. Return None to cancel, STOP_BATCH to stop a batch."""
+def read_pasted_aggregate_data_block(prompt, allow_stop=False):
+    """Read one pasted Aggregate Data block without requiring an end marker."""
     print(prompt)
-    lines = []
-    end_token = end_token.strip().lower()
+    first_line = input("> ")
+    lines = [first_line]
 
-    while True:
-        line = input()
-        stripped = line.strip()
-        lowered = stripped.lower()
+    # In terminal-like environments, pasting a multi-line block can leave the
+    # remaining lines buffered on stdin after input() reads the first line.
+    # Drain whatever is immediately available, while keeping notebooks simple.
+    try:
+        import select
 
-        if lowered == end_token:
-            break
-        if lowered == "cancel":
-            return None
-        if allow_stop and lowered == "stop":
-            return STOP_BATCH
-
-        lines.append(line)
+        while select.select([sys.stdin], [], [], 0.05)[0]:
+            extra_line = sys.stdin.readline()
+            if extra_line == "":
+                break
+            lines.append(extra_line.rstrip("\n"))
+    except (AttributeError, OSError, ValueError):
+        pass
 
     text = "\n".join(lines).strip()
     if not text:
         return None
+
+    command = text.strip().lower()
+    if command in {"skip", "cancel"}:
+        return None
+    if command == "stop":
+        return STOP_BATCH if allow_stop else None
 
     return text
 
@@ -1051,18 +1058,35 @@ def print_parsed_aggregate_metrics(metrics, period=None):
     print(f"Margin (‱):    {metrics['margin_permyriad']}")
 
 
-def ask_aggregate_data_metrics(period="train", allow_stop=False, include_raw=False):
+def ask_aggregate_data_metrics(
+    period="train",
+    allow_stop=False,
+    include_raw=False,
+    candidate=None,
+    index=None,
+    batch=None,
+):
     """Ask for a pasted Aggregate Data block and return parsed metrics."""
     period_label = period.upper()
+    if candidate is not None and index is not None and batch is not None:
+        heading = f"Enter {period_label} metrics for candidate {index}/{batch}: {candidate['alpha_name']}"
+    elif candidate is not None:
+        heading = f"Enter {period_label} metrics for candidate: {candidate['alpha_name']}"
+    else:
+        heading = f"Enter {period_label} metrics"
+
+    skip_target = "this candidate" if period_label == "TRAIN" else f"{period_label} metrics"
+    stop_text = " Type stop to end the remaining batch." if allow_stop else ""
     prompt = (
-        f"Paste {period_label} Aggregate Data block. Type DONE on a new line when finished.\n"
-        "Type cancel to skip this candidate"
-        + (" or stop to end the remaining batch" if allow_stop else "")
-        + "."
+        f"\n{heading}\n"
+        "Paste the copied BRAIN Aggregate Data block below, then press Enter.\n"
+        "If multi-line paste is not captured by your notebook, paste a compact one-line block like:\n"
+        "Sharpe 0.88 Turnover 6.27% Fitness 1.45 Returns 33.97% Drawdown 66.71% Margin 108.38‱\n"
+        f"Press Enter or type skip to skip {skip_target}.{stop_text}"
     )
 
     while True:
-        block = read_multiline_block(prompt, allow_stop=allow_stop)
+        block = read_pasted_aggregate_data_block(prompt, allow_stop=allow_stop)
         if block is STOP_BATCH:
             return STOP_BATCH
         if block is None:
@@ -1072,7 +1096,7 @@ def ask_aggregate_data_metrics(period="train", allow_stop=False, include_raw=Fal
             metrics = parse_aggregate_data_block(block)
         except ValueError as error:
             print(f"\nCould not parse Aggregate Data block: {error}")
-            print("Please paste the block again, or type cancel then DONE to skip this candidate.")
+            print(f"Please paste the block again, type skip to skip {skip_target}, or use the compact one-line format.")
             continue
 
         print_parsed_aggregate_metrics(metrics, period=period)
@@ -1194,16 +1218,20 @@ def print_candidate(candidate, index=None, batch=None):
 def collect_metrics_for_candidate(candidate, index=None, batch=None, allow_stop=False):
     """Collect Aggregate Data metrics and return a completed result dict."""
     if index is None or batch is None:
-        print("\nAfter the simulation finishes, enter the TRAIN Aggregate Data metrics:")
-        print("Paste the copied TRAIN Aggregate Data block below.")
+        print("\nAfter the simulation finishes, enter the TRAIN Aggregate Data metrics.")
     else:
-        print(f"\nEnter metrics for candidate {index}/{batch}: {candidate['alpha_name']}")
+        print(f"\nMetric entry for candidate {index}/{batch}: {candidate['alpha_name']}")
         print("\nAlpha expression:")
         print(candidate["alpha"])
-        stop_hint = " Type stop at any prompt to end the remaining batch." if allow_stop else ""
-        print(f"Paste the copied TRAIN Aggregate Data block below.{stop_hint}")
 
-    train_entry = ask_aggregate_data_metrics(period="train", allow_stop=allow_stop, include_raw=True)
+    train_entry = ask_aggregate_data_metrics(
+        period="train",
+        allow_stop=allow_stop,
+        include_raw=True,
+        candidate=candidate,
+        index=index,
+        batch=batch,
+    )
     if train_entry is STOP_BATCH:
         return STOP_BATCH
     if train_entry is None:
@@ -1220,37 +1248,53 @@ def collect_metrics_for_candidate(candidate, index=None, batch=None, allow_stop=
     if add_test is STOP_BATCH:
         return STOP_BATCH
     if add_test:
-        test_entry = ask_aggregate_data_metrics(period="test", allow_stop=allow_stop, include_raw=True)
+        test_entry = ask_aggregate_data_metrics(
+            period="test",
+            allow_stop=allow_stop,
+            include_raw=True,
+            candidate=candidate,
+            index=index,
+            batch=batch,
+        )
         if test_entry is STOP_BATCH:
             return STOP_BATCH
         if test_entry is None:
-            return None
-        test_metrics, test_aggregate_data = test_entry
-        result_fields.update(
-            build_period_result_fields(
-                test_metrics,
-                "test",
-                aggregate_data=test_aggregate_data,
+            print("Skipped TEST metrics for this candidate.")
+        else:
+            test_metrics, test_aggregate_data = test_entry
+            result_fields.update(
+                build_period_result_fields(
+                    test_metrics,
+                    "test",
+                    aggregate_data=test_aggregate_data,
+                )
             )
-        )
 
     add_is = ask_yes_no("Add IS metrics now? y/n: ", allow_stop=allow_stop)
     if add_is is STOP_BATCH:
         return STOP_BATCH
     if add_is:
-        is_entry = ask_aggregate_data_metrics(period="is", allow_stop=allow_stop, include_raw=True)
+        is_entry = ask_aggregate_data_metrics(
+            period="is",
+            allow_stop=allow_stop,
+            include_raw=True,
+            candidate=candidate,
+            index=index,
+            batch=batch,
+        )
         if is_entry is STOP_BATCH:
             return STOP_BATCH
         if is_entry is None:
-            return None
-        is_metrics, is_aggregate_data = is_entry
-        result_fields.update(
-            build_period_result_fields(
-                is_metrics,
-                "is",
-                aggregate_data=is_aggregate_data,
+            print("Skipped IS metrics for this candidate.")
+        else:
+            is_metrics, is_aggregate_data = is_entry
+            result_fields.update(
+                build_period_result_fields(
+                    is_metrics,
+                    "is",
+                    aggregate_data=is_aggregate_data,
+                )
             )
-        )
 
     rating_prompt = "BRAIN rating [Spectacular / Excellent / Good / Average / Needs Improvement]: "
     brain_rating = ask_brain_rating(rating_prompt, allow_stop=allow_stop)

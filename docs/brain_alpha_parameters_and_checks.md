@@ -23,7 +23,7 @@ Submission remains a separate manual action on BRAIN.
 Our normal Python workflow asks you to paste the TRAIN Aggregate Data block:
 
 ```text
-Paste TRAIN Aggregate Data block. Type DONE on a new line when finished.
+Paste the copied BRAIN Aggregate Data block below, then press Enter.
 ```
 
 Python parses these metrics from the pasted block:
@@ -42,6 +42,14 @@ BRAIN rating:
 ```
 
 The parser tolerates `%` and `‱` symbols in the pasted BRAIN text. If you ever type a value manually, type numbers only and do not include units.
+
+If multi-line paste is not captured cleanly by your notebook, paste a compact one-line version:
+
+```text
+Sharpe 0.88 Turnover 6.27% Fitness 1.45 Returns 33.97% Drawdown 66.71% Margin 108.38‱
+```
+
+Empty input or `skip` skips the current candidate without saving a row. In batch mode, `stop` ends the remaining candidates.
 
 New CSV rows store these values in explicit TRAIN columns:
 
