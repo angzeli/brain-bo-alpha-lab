@@ -28,8 +28,6 @@ TEMPLATE_TYPES = [
     "low_volatility",
     "volume_ratio",
     "volume_ratio_inverse",
-    "range_position",
-    "time_series_rank",
     "short_long_trend",
     "volume_surprise",
     "price_volume_momentum",
@@ -46,6 +44,39 @@ NEUTRALISATIONS = ["None", "Market", "Sector", "Industry", "Subindustry"]
 BOOLEAN_SETTINGS = ["Off", "On"]
 DIRECTIONS = [1, -1]
 SMOOTHING_WINDOWS = [3, 5, 10]
+FORCED_NEGATIVE_DIRECTION_TEMPLATES = {
+    "price_reversion",
+    "low_volatility",
+    "price_volume_reversal",
+    "smoothed_price_volume_reversal",
+}
+SMOOTHED_TEMPLATES = {
+    "smoothed_price_momentum",
+    "smoothed_price_volume_reversal",
+}
+PRICE_FIELD_TEMPLATES = {
+    "price_momentum",
+    "price_reversion",
+    "low_volatility",
+    "short_long_trend",
+    "price_volume_momentum",
+    "price_volume_reversal",
+    "smoothed_price_momentum",
+    "smoothed_price_volume_reversal",
+}
+M_USED_TEMPLATES = {
+    "price_momentum",
+    "price_reversion",
+    "volume_ratio",
+    "volume_ratio_inverse",
+    "short_long_trend",
+    "volume_surprise",
+    "price_volume_momentum",
+    "price_volume_reversal",
+    "smoothed_price_momentum",
+    "smoothed_price_volume_reversal",
+}
+N_USED_TEMPLATES = set(TEMPLATE_TYPES) - {"intraday_position"}
 
 CSV_COLUMN_ORDER = [
     "run_id",
@@ -106,8 +137,6 @@ TEMPLATE_CATEGORY_MAP = {
     "low_volatility": "price reversion",
     "volume_ratio": "volume",
     "volume_ratio_inverse": "volume",
-    "range_position": "price momentum",
-    "time_series_rank": "price momentum",
     "short_long_trend": "price momentum",
     "volume_surprise": "volume",
     "price_volume_momentum": "price volume",
@@ -225,6 +254,17 @@ def canonicalise_direction(direction):
     return direction
 
 
+def default_direction_for_template(template_type):
+    return -1 if template_type in FORCED_NEGATIVE_DIRECTION_TEMPLATES else 1
+
+
+def canonicalise_direction_for_template(template_type, direction):
+    direction = canonicalise_direction(direction)
+    if template_type in FORCED_NEGATIVE_DIRECTION_TEMPLATES:
+        return -1
+    return direction
+
+
 def canonicalise_smoothing_window(smoothing_window):
     """Return one of the configured smoothing windows."""
     window = int(smoothing_window)
@@ -292,27 +332,32 @@ def canonicalise_params(params):
         params = ast.literal_eval(params)
 
     if isinstance(params, dict):
+        template_type = canonicalise_template_type(params["template_type"])
         return [
             int(params["n"]),
             int(params["m"]),
             int(params["decay"]),
             float(params["truncation"]),
-            canonicalise_template_type(params["template_type"]),
+            template_type,
             str(params["price_field"]),
             str(params["transform"]),
             str(params["neutralisation"]),
             str(params["pasteurisation"]),
             str(params["nan_handling"]),
-            canonicalise_direction(params.get("direction", 1)),
+            canonicalise_direction_for_template(
+                template_type,
+                params.get("direction", default_direction_for_template(template_type)),
+            ),
             canonicalise_smoothing_window(params.get("smoothing_window", 5)),
         ]
 
     # Old 3-parameter schema: [n, m, signal/template_type]
     if len(params) == 3:
+        template_type = canonicalise_template_type(params[2])
         return [
             int(params[0]), int(params[1]), 1, 0.01,
-            canonicalise_template_type(params[2]), "close", "rank", "None", "On", "Off",
-            1, 5,
+            template_type, "close", "rank", "None", "On", "Off",
+            default_direction_for_template(template_type), 5,
         ]
 
     # Previous 9-parameter schema:
@@ -321,11 +366,12 @@ def canonicalise_params(params):
     if len(params) == 9:
         neutralisation = str(params[7])
         neutralisation = "None" if neutralisation.lower() == "none" else neutralisation.capitalize()
+        template_type = canonicalise_template_type(params[4])
 
         return [
             int(params[0]), int(params[1]), int(params[2]), float(params[3]),
-            canonicalise_template_type(params[4]), str(params[5]), str(params[6]),
-            neutralisation, "On", "Off", 1, 5,
+            template_type, str(params[5]), str(params[6]),
+            neutralisation, "On", "Off", default_direction_for_template(template_type), 5,
         ]
 
     # Previous 13-parameter schema:
@@ -333,35 +379,40 @@ def canonicalise_params(params):
     #  neutralisation, universe, pasteurisation, nan_handling,
     #  test_years, test_months]
     if len(params) == 13:
+        template_type = canonicalise_template_type(params[4])
         return [
             int(params[0]), int(params[1]), int(params[2]), float(params[3]),
-            canonicalise_template_type(params[4]), str(params[5]), str(params[6]), str(params[7]),
-            str(params[9]), str(params[10]), 1, 5,
+            template_type, str(params[5]), str(params[6]), str(params[7]),
+            str(params[9]), str(params[10]), default_direction_for_template(template_type), 5,
         ]
 
     # Previous/current 10-parameter schema without delay, direction, or smoothing.
     if len(params) == 10:
+        template_type = canonicalise_template_type(params[4])
         return [
             int(params[0]), int(params[1]), int(params[2]), float(params[3]),
-            canonicalise_template_type(params[4]), str(params[5]), str(params[6]), str(params[7]),
-            str(params[8]), str(params[9]), 1, 5,
+            template_type, str(params[5]), str(params[6]), str(params[7]),
+            str(params[8]), str(params[9]), default_direction_for_template(template_type), 5,
         ]
 
     # Previous 11-parameter schema with optimised delay. Drop saved delay and use FIXED_DELAY.
     if len(params) == 11:
+        template_type = canonicalise_template_type(params[5])
         return [
             int(params[0]), int(params[1]), int(params[3]), float(params[4]),
-            canonicalise_template_type(params[5]), str(params[6]), str(params[7]), str(params[8]),
-            str(params[9]), str(params[10]), 1, 5,
+            template_type, str(params[6]), str(params[7]), str(params[8]),
+            str(params[9]), str(params[10]), default_direction_for_template(template_type), 5,
         ]
 
     # Current 12-parameter schema.
     if len(params) == 12:
+        template_type = canonicalise_template_type(params[4])
         return [
             int(params[0]), int(params[1]), int(params[2]), float(params[3]),
-            canonicalise_template_type(params[4]), str(params[5]), str(params[6]), str(params[7]),
+            template_type, str(params[5]), str(params[6]), str(params[7]),
             str(params[8]), str(params[9]),
-            canonicalise_direction(params[10]), canonicalise_smoothing_window(params[11]),
+            canonicalise_direction_for_template(template_type, params[10]),
+            canonicalise_smoothing_window(params[11]),
         ]
 
     raise ValueError(f"Unsupported params format with length {len(params)}: {params}")
@@ -408,6 +459,29 @@ def repair_candidate(decoded):
     if rounded_truncation != repaired["truncation"]:
         repair_flags.append("rounded_truncation")
     repaired["truncation"] = rounded_truncation
+
+    if (
+        repaired["template_type"] in FORCED_NEGATIVE_DIRECTION_TEMPLATES
+        and repaired["direction"] != -1
+    ):
+        repaired["direction"] = -1
+        repair_flags.append("forced_negative_direction")
+
+    if repaired["template_type"] not in SMOOTHED_TEMPLATES and repaired["smoothing_window"] != 5:
+        repaired["smoothing_window"] = 5
+        repair_flags.append("unused_smoothing_window")
+
+    if repaired["template_type"] not in PRICE_FIELD_TEMPLATES and repaired["price_field"] != "close":
+        repaired["price_field"] = "close"
+        repair_flags.append("unused_price_field")
+
+    if repaired["template_type"] not in M_USED_TEMPLATES and repaired["m"] != 60:
+        repaired["m"] = 60
+        repair_flags.append("unused_m")
+
+    if repaired["template_type"] not in N_USED_TEMPLATES and repaired["n"] != 20:
+        repaired["n"] = 20
+        repair_flags.append("unused_n")
 
     return repaired, repair_flags
 
@@ -488,7 +562,23 @@ def encode_params(params):
 
 
 def candidate_key(params):
-    return tuple(canonicalise_params(params))
+    """Return a duplicate-detection key based on the final BRAIN candidate."""
+    (
+        n, m, decay, truncation, template_type, price_field, transform,
+        neutralisation, pasteurisation, nan_handling, direction, smoothing_window,
+    ) = canonicalise_params(params)
+    alpha = apply_transform(
+        apply_direction(build_base_expression(params), direction),
+        transform,
+    )
+    return (
+        alpha,
+        decay,
+        truncation,
+        neutralisation,
+        pasteurisation,
+        nan_handling,
+    )
 
 
 def apply_transform(expression, transform):
@@ -530,17 +620,13 @@ def build_base_expression(params):
     if template_type == "price_momentum":
         return f"ts_delta({price_field}, {n}) / ts_std_dev({price_field}, {m})"
     if template_type == "price_reversion":
-        return f"-ts_delta({price_field}, {n}) / ts_std_dev({price_field}, {m})"
+        return f"ts_delta({price_field}, {n}) / ts_std_dev({price_field}, {m})"
     if template_type == "low_volatility":
-        return f"-ts_std_dev({price_field}, {n})"
+        return f"ts_std_dev({price_field}, {n})"
     if template_type == "volume_ratio":
         return f"ts_mean(volume, {n}) / ts_mean(volume, {m})"
     if template_type == "volume_ratio_inverse":
         return f"ts_mean(volume, {m}) / ts_mean(volume, {n})"
-    if template_type == "range_position":
-        return f"ts_scale({price_field}, {n})"
-    if template_type == "time_series_rank":
-        return f"ts_rank({price_field}, {n})"
     if template_type == "short_long_trend":
         short_window, long_window = trend_windows(n, m)
         return f"ts_mean({price_field}, {short_window}) / ts_mean({price_field}, {long_window}) - 1"
@@ -549,11 +635,11 @@ def build_base_expression(params):
     if template_type == "price_volume_momentum":
         return f"ts_delta({price_field}, {n}) * (volume / ts_mean(volume, {m}))"
     if template_type == "price_volume_reversal":
-        return f"-ts_delta({price_field}, {n}) * (volume / ts_mean(volume, {m}))"
+        return f"ts_delta({price_field}, {n}) * (volume / ts_mean(volume, {m}))"
     if template_type == "smoothed_price_momentum":
         return f"ts_mean(ts_delta({price_field}, {n}), {smoothing_window}) / ts_std_dev({price_field}, {m})"
     if template_type == "smoothed_price_volume_reversal":
-        return f"-ts_mean(ts_delta({price_field}, {n}), {smoothing_window}) * (volume / ts_mean(volume, {m}))"
+        return f"ts_mean(ts_delta({price_field}, {n}), {smoothing_window}) * (volume / ts_mean(volume, {m}))"
     if template_type == "high_low_momentum_spread":
         return f"ts_delta(high, {n}) - ts_delta(low, {n})"
     if template_type == "close_to_vwap_momentum":
@@ -594,32 +680,26 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
         neutralisation, pasteurisation, nan_handling, direction, smoothing_window,
     ) = canonicalise_params(params)
 
-    alpha_category = TEMPLATE_CATEGORY_MAP[template_type]
     short_window, long_window = trend_windows(n, m)
     direction_prefix = "neg_" if direction == -1 else ""
     direction_note = "" if direction == 1 else " Negative direction is applied before the cross-sectional transform."
+    alpha_category = infer_alpha_category(template_type, direction)
 
     if template_type == "price_momentum":
         alpha_name = f"{direction_prefix}mom_{price_field}_{n}_volnorm_{m}"
         uses = f"Uses a {n}-day {price_field} price change normalised by {m}-day {price_field} volatility"
     elif template_type == "price_reversion":
         alpha_name = f"{direction_prefix}rev_{price_field}_{n}_volnorm_{m}"
-        uses = f"Uses a negative {n}-day {price_field} price change normalised by {m}-day {price_field} volatility"
+        uses = f"Uses a {n}-day {price_field} price-change signal normalised by {m}-day {price_field} volatility, labelled as a reversion hypothesis"
     elif template_type == "low_volatility":
         alpha_name = f"{direction_prefix}low_vol_{price_field}_{n}_{transform}"
-        uses = f"Uses negative {n}-day {price_field} volatility"
+        uses = f"Uses {n}-day {price_field} volatility"
     elif template_type == "volume_ratio":
         alpha_name = f"{direction_prefix}vol_ratio_{n}_{m}_{transform}"
         uses = f"Uses the ratio of {n}-day average volume to {m}-day average volume"
     elif template_type == "volume_ratio_inverse":
         alpha_name = f"{direction_prefix}vol_ratio_inv_{m}_{n}_{transform}"
         uses = f"Uses the inverse ratio of {m}-day average volume to {n}-day average volume"
-    elif template_type == "range_position":
-        alpha_name = f"{direction_prefix}range_scale_{price_field}_{n}_{transform}"
-        uses = f"Uses the time-series scaled position of {price_field} over a {n}-day lookback"
-    elif template_type == "time_series_rank":
-        alpha_name = f"{direction_prefix}ts_rank_{price_field}_{n}_{transform}"
-        uses = f"Uses the {n}-day time-series rank of {price_field}"
     elif template_type == "short_long_trend":
         alpha_name = f"{direction_prefix}trend_{price_field}_{short_window}_{long_window}_{transform}"
         uses = f"Uses the ratio of {short_window}-day to {long_window}-day average {price_field} levels"
@@ -631,13 +711,13 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
         uses = f"Uses {n}-day {price_field} price change scaled by relative volume versus its {m}-day average"
     elif template_type == "price_volume_reversal":
         alpha_name = f"{direction_prefix}pv_rev_{price_field}_{n}_{m}_{transform}"
-        uses = f"Uses negative {n}-day {price_field} price change scaled by relative volume versus its {m}-day average"
+        uses = f"Uses a {n}-day {price_field} price-change signal scaled by relative volume versus its {m}-day average, labelled as a reversal hypothesis"
     elif template_type == "smoothed_price_momentum":
         alpha_name = f"{direction_prefix}mom_smooth_{price_field}_{n}_{m}_s{smoothing_window}_{transform}"
         uses = f"Uses a {smoothing_window}-day smoothed {n}-day {price_field} price change normalised by {m}-day {price_field} volatility"
     elif template_type == "smoothed_price_volume_reversal":
         alpha_name = f"{direction_prefix}pv_rev_smooth_{price_field}_{n}_{m}_s{smoothing_window}_{transform}"
-        uses = f"Uses a {smoothing_window}-day smoothed negative {n}-day {price_field} price-change signal scaled by relative volume versus its {m}-day average"
+        uses = f"Uses a {smoothing_window}-day smoothed {n}-day {price_field} price-change signal scaled by relative volume versus its {m}-day average, labelled as a reversal hypothesis"
     elif template_type == "high_low_momentum_spread":
         alpha_name = f"{direction_prefix}hl_spread_{n}_{transform}"
         uses = f"Uses the spread between high-price momentum and low-price momentum over a {n}-day lookback"
@@ -662,6 +742,17 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
         "alpha_category": alpha_category,
         "alpha_description": alpha_description,
     }
+
+
+def infer_alpha_category(template_type, direction):
+    """Return the BRAIN category implied by the template and final sign."""
+    if template_type in {"price_momentum", "price_reversion", "smoothed_price_momentum"}:
+        return "price momentum" if direction == 1 else "price reversion"
+    if template_type in {"low_volatility", "intraday_position"}:
+        return "price reversion"
+    if template_type in {"price_volume_momentum", "price_volume_reversal", "smoothed_price_volume_reversal"}:
+        return "price volume"
+    return TEMPLATE_CATEGORY_MAP[template_type]
 
 
 def compute_period_score(sharpe, turnover_pct, fitness, returns_pct, drawdown_pct, margin_permyriad):

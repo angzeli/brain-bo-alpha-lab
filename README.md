@@ -115,7 +115,7 @@ The optimiser currently searches over:
 
 The region is currently fixed to `USA`, Delay is currently fixed to `1`, and each universe is treated as a separate campaign.
 
-Current template families include price momentum/reversion, low volatility, volume ratio/surprise, inverse volume ratio, range position, time-series rank, short/long trend, price-volume momentum/reversal, smoothed price and price-volume variants, high/low momentum spread, close-to-VWAP momentum, and intraday position.
+Current template families include price momentum/reversion, low volatility, volume ratio/surprise, inverse volume ratio, short/long trend, price-volume momentum/reversal, smoothed price and price-volume variants, high/low momentum spread, close-to-VWAP momentum, and intraday position. Future suggestions avoid unconfirmed operators such as `ts_min`, `ts_max`, `ts_rank`, and `ts_scale`.
 
 ---
 
