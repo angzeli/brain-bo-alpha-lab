@@ -28,6 +28,8 @@ TEMPLATE_TYPES = [
     "low_volatility",
     "volume_ratio",
     "volume_ratio_inverse",
+    "range_position",
+    "time_series_rank",
     "short_long_trend",
     "volume_surprise",
     "price_volume_momentum",
@@ -58,6 +60,8 @@ PRICE_FIELD_TEMPLATES = {
     "price_momentum",
     "price_reversion",
     "low_volatility",
+    "range_position",
+    "time_series_rank",
     "short_long_trend",
     "price_volume_momentum",
     "price_volume_reversal",
@@ -137,6 +141,8 @@ TEMPLATE_CATEGORY_MAP = {
     "low_volatility": "price reversion",
     "volume_ratio": "volume",
     "volume_ratio_inverse": "volume",
+    "range_position": "price momentum",
+    "time_series_rank": "price momentum",
     "short_long_trend": "price momentum",
     "volume_surprise": "volume",
     "price_volume_momentum": "price volume",
@@ -627,6 +633,10 @@ def build_base_expression(params):
         return f"ts_mean(volume, {n}) / ts_mean(volume, {m})"
     if template_type == "volume_ratio_inverse":
         return f"ts_mean(volume, {m}) / ts_mean(volume, {n})"
+    if template_type == "range_position":
+        return f"ts_scale({price_field}, {n})"
+    if template_type == "time_series_rank":
+        return f"ts_rank({price_field}, {n})"
     if template_type == "short_long_trend":
         short_window, long_window = trend_windows(n, m)
         return f"ts_mean({price_field}, {short_window}) / ts_mean({price_field}, {long_window}) - 1"
@@ -700,6 +710,12 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
     elif template_type == "volume_ratio_inverse":
         alpha_name = f"{direction_prefix}vol_ratio_inv_{m}_{n}_{transform}"
         uses = f"Uses the inverse ratio of {m}-day average volume to {n}-day average volume"
+    elif template_type == "range_position":
+        alpha_name = f"{direction_prefix}range_scale_{price_field}_{n}_{transform}"
+        uses = f"Uses the time-series scaled position of {price_field} over a {n}-day lookback"
+    elif template_type == "time_series_rank":
+        alpha_name = f"{direction_prefix}ts_rank_{price_field}_{n}_{transform}"
+        uses = f"Uses the {n}-day time-series rank of {price_field}"
     elif template_type == "short_long_trend":
         alpha_name = f"{direction_prefix}trend_{price_field}_{short_window}_{long_window}_{transform}"
         uses = f"Uses the ratio of {short_window}-day to {long_window}-day average {price_field} levels"
