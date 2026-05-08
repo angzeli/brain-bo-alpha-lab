@@ -196,9 +196,11 @@ It is intended as a local research assistant for organising and guiding manual a
 
 ## 🧪 Project Status
 
-Early experimental prototype.
+This project is currently archived as a workflow prototype.
 
-`alpha_bo.py` currently keeps the core workflow in one file to minimise friction before the Round 1 deadline. A useful refactor would be to split it into smaller modules for candidate generation, alpha-template construction, metric parsing, scoring, and CSV logging.
+The repository demonstrates a human-in-the-loop Bayesian optimisation workflow for WorldQuant BRAIN alpha research, including candidate generation, batch execution support, resume-safe CSV logging, TRAIN/TEST/IS metric recording, data-pool combining, filtering, and documentation for operators.
+
+The focus of this version is the research infrastructure rather than validated alpha performance.
 
 ---
 
