@@ -1,21 +1,18 @@
 # 🧠 BRAIN BO Alpha Lab
 
-A human-in-the-loop Bayesian optimisation workflow for systematic alpha research on WorldQuant BRAIN.
+A human-in-the-loop Bayesian optimisation toolkit for structured WorldQuant BRAIN alpha research.
 
-This project uses **BoTorch** and **GPyTorch** to suggest candidate alpha configurations, while keeping the actual WorldQuant BRAIN simulation step manual. The goal is not to automate submissions, but to make alpha research more structured, reproducible, and data-driven.
+This project explores how Bayesian optimisation can support manual alpha experimentation on WorldQuant BRAIN. Python suggests candidate alpha expressions and simulation settings; the user manually runs the simulation on BRAIN; the resulting TRAIN / TEST / IS metrics are recorded back into a resume-safe CSV workflow.
+
+The project does not automate BRAIN, scrape platform data, or submit alphas automatically. Its purpose is to provide a reproducible research workflow for noisy, manual, black-box alpha experimentation.
 
 ---
 
-## 🎯 Motivation
+## 🎯 Why This Project Matters
 
-Alpha research on BRAIN is naturally an experimental optimisation problem:
+Alpha research on BRAIN is naturally a noisy experimental optimisation problem: each expression is a hypothesis, each simulation gives imperfect feedback, and the search space contains mixed continuous, discrete, and categorical variables.
 
-- each alpha expression is a hypothesis,
-- each backtest gives noisy feedback,
-- the design space is large and mixed continuous/categorical,
-- and good research requires balancing exploration with exploitation.
-
-This repository explores how Bayesian optimisation can be used as a lightweight assistant for this process.
+This project treats alpha discovery as a structured human-in-the-loop research process rather than ad hoc trial and error. The emphasis is on reproducibility, experiment logging, and systematic iteration.
 
 The workflow is deliberately **human-in-the-loop**:
 
@@ -32,10 +29,10 @@ The workflow is deliberately **human-in-the-loop**:
 ```python
 brain-bo-alpha-lab/
 ├── docs/
-│   ├── brain_alpha_parameters_and_checks.md
-│   ├── brain_operator_playbook.md
 │   ├── github_terminal_workflow.md
-│   └── quick_start.md 
+│   ├── quick_start.md
+│   ├── brain_alpha_parameters_and_checks.md
+│   └── brain_operator_playbook.md
 ├── .gitignore
 ├── alpha_bo.py
 ├── alpha.ipynb
@@ -198,9 +195,9 @@ It is intended as a local research assistant for organising and guiding manual a
 
 This project is currently archived as a workflow prototype.
 
-The repository demonstrates a human-in-the-loop Bayesian optimisation workflow for WorldQuant BRAIN alpha research, including candidate generation, batch execution support, resume-safe CSV logging, TRAIN/TEST/IS metric recording, data-pool combining, filtering, and documentation for operators.
+The focus of this version is the research infrastructure rather than validated alpha performance. It demonstrates candidate generation, batch execution support, resume-safe CSV logging, period-specific metric recording, data-pool combining, filtering, backfilling, and teammate-facing documentation.
 
-The focus of this version is the research infrastructure rather than validated alpha performance.
+`alpha_bo.py` currently keeps the core workflow in one file to minimise friction before the Round 1 deadline. After the deadline, a useful refactor would be to split it into smaller modules for candidate generation, alpha-template construction, metric parsing, scoring, and CSV logging.
 
 ---
 
