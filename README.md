@@ -33,6 +33,7 @@ The workflow is deliberately **human-in-the-loop**:
 brain-bo-alpha-lab/
 ├── docs/
 │   ├── brain_alpha_parameters_and_checks.md
+│   ├── brain_operator_playbook.md
 │   ├── github_terminal_workflow.md
 │   └── quick_start.md 
 ├── .gitignore
@@ -57,6 +58,7 @@ For detailed setup and usage instructions, see:
 - [`docs/quick_start.md`](docs/quick_start.md) — beginner-friendly guide for running the workflow.
 - [`docs/github_terminal_workflow.md`](docs/github_terminal_workflow.md) — practical Git/GitHub terminal commands for collaboration.
 - [`docs/brain_alpha_parameters_and_checks.md`](docs/brain_alpha_parameters_and_checks.md) — explains BRAIN metrics, ratings, checks, and how to record simulation results.
+- [`docs/brain_operator_playbook.md`](docs/brain_operator_playbook.md) — practical guide to BRAIN operators used for alpha-template design.
 
 ---
 
@@ -196,13 +198,7 @@ It is intended as a local research assistant for organising and guiding manual a
 
 Early experimental prototype.
 
-Current priorities:
-
-- improve the objective function after collecting real trials,
-- add cleaner diagnostics for completed BO campaigns,
-- improve handling of categorical variables,
-- add more alpha expression templates,
-- and compare BO-guided search against random/manual baselines.
+`alpha_bo.py` currently keeps the core workflow in one file to minimise friction before the Round 1 deadline. A useful refactor would be to split it into smaller modules for candidate generation, alpha-template construction, metric parsing, scoring, and CSV logging.
 
 ---
 
