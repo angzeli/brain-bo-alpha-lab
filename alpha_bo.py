@@ -28,20 +28,33 @@ TEMPLATE_TYPES = [
     "low_volatility",
     "volume_ratio",
     "volume_ratio_inverse",
-    "range_position",
-    "time_series_rank",
+    "ts_scaled_price",
+    "ts_rank_price",
+    "ts_zscore_price",
+    "price_av_diff",
     "short_long_trend",
+    "volatility_change",
     "volume_surprise",
+    "volume_av_diff",
+    "smoothed_volume_surprise",
     "price_volume_momentum",
     "price_volume_reversal",
     "smoothed_price_momentum",
+    "smoothed_price_volume",
     "smoothed_price_volume_reversal",
+    "volume_weighted_reversal",
+    "price_volume_corr",
+    "price_volume_corr_change",
     "high_low_momentum_spread",
     "close_to_vwap_momentum",
     "intraday_position",
+    "intraday_vwap_position",
+    "argmax_momentum",
+    "argmin_reversal",
+    "hump_smoothed_momentum",
 ]
 PRICE_FIELDS = ["close", "open", "high", "low", "vwap"]
-TRANSFORMS = ["rank", "zscore", "scale"]
+TRANSFORMS = ["rank", "zscore", "scale", "normalize", "winsorize"]
 NEUTRALISATIONS = ["None", "Market", "Sector", "Industry", "Subindustry"]
 BOOLEAN_SETTINGS = ["Off", "On"]
 DIRECTIONS = [1, -1]
@@ -51,22 +64,36 @@ FORCED_NEGATIVE_DIRECTION_TEMPLATES = {
     "low_volatility",
     "price_volume_reversal",
     "smoothed_price_volume_reversal",
+    "volume_weighted_reversal",
+    "argmax_momentum",
 }
 SMOOTHED_TEMPLATES = {
     "smoothed_price_momentum",
+    "smoothed_price_volume",
     "smoothed_price_volume_reversal",
+    "smoothed_volume_surprise",
 }
 PRICE_FIELD_TEMPLATES = {
     "price_momentum",
     "price_reversion",
     "low_volatility",
-    "range_position",
-    "time_series_rank",
+    "ts_scaled_price",
+    "ts_rank_price",
+    "ts_zscore_price",
+    "price_av_diff",
     "short_long_trend",
+    "volatility_change",
     "price_volume_momentum",
     "price_volume_reversal",
     "smoothed_price_momentum",
+    "smoothed_price_volume",
     "smoothed_price_volume_reversal",
+    "volume_weighted_reversal",
+    "price_volume_corr",
+    "price_volume_corr_change",
+    "argmax_momentum",
+    "argmin_reversal",
+    "hump_smoothed_momentum",
 }
 M_USED_TEMPLATES = {
     "price_momentum",
@@ -74,13 +101,17 @@ M_USED_TEMPLATES = {
     "volume_ratio",
     "volume_ratio_inverse",
     "short_long_trend",
+    "volatility_change",
     "volume_surprise",
     "price_volume_momentum",
     "price_volume_reversal",
     "smoothed_price_momentum",
+    "smoothed_price_volume",
     "smoothed_price_volume_reversal",
+    "volume_weighted_reversal",
+    "price_volume_corr_change",
 }
-N_USED_TEMPLATES = set(TEMPLATE_TYPES) - {"intraday_position"}
+N_USED_TEMPLATES = set(TEMPLATE_TYPES) - {"intraday_position", "intraday_vwap_position"}
 
 CSV_COLUMN_ORDER = [
     "run_id",
@@ -141,17 +172,30 @@ TEMPLATE_CATEGORY_MAP = {
     "low_volatility": "price reversion",
     "volume_ratio": "volume",
     "volume_ratio_inverse": "volume",
-    "range_position": "price momentum",
-    "time_series_rank": "price momentum",
+    "ts_scaled_price": "price momentum",
+    "ts_rank_price": "price momentum",
+    "ts_zscore_price": "price reversion",
+    "price_av_diff": "price reversion",
     "short_long_trend": "price momentum",
+    "volatility_change": "price reversion",
     "volume_surprise": "volume",
+    "volume_av_diff": "volume",
+    "smoothed_volume_surprise": "volume",
     "price_volume_momentum": "price volume",
     "price_volume_reversal": "price volume",
     "smoothed_price_momentum": "price momentum",
+    "smoothed_price_volume": "price volume",
     "smoothed_price_volume_reversal": "price volume",
+    "volume_weighted_reversal": "price volume",
+    "price_volume_corr": "price volume",
+    "price_volume_corr_change": "price volume",
     "high_low_momentum_spread": "price momentum",
     "close_to_vwap_momentum": "price momentum",
     "intraday_position": "price reversion",
+    "intraday_vwap_position": "price reversion",
+    "argmax_momentum": "price momentum",
+    "argmin_reversal": "price reversion",
+    "hump_smoothed_momentum": "price momentum",
 }
 
 LEGACY_TEMPLATE_MAP = {
@@ -159,6 +203,8 @@ LEGACY_TEMPLATE_MAP = {
     "reversal": "price_reversion",
     "volume": "volume_ratio",
     "volatility": "low_volatility",
+    "range_position": "ts_scaled_price",
+    "time_series_rank": "ts_rank_price",
 }
 
 BRAIN_RATINGS = [
@@ -594,6 +640,10 @@ def apply_transform(expression, transform):
         return f"zscore({expression})"
     if transform == "scale":
         return f"scale({expression})"
+    if transform == "normalize":
+        return f"normalize({expression})"
+    if transform == "winsorize":
+        return f"winsorize({expression})"
     raise ValueError(f"Unknown transform: {transform}")
 
 
@@ -633,29 +683,55 @@ def build_base_expression(params):
         return f"ts_mean(volume, {n}) / ts_mean(volume, {m})"
     if template_type == "volume_ratio_inverse":
         return f"ts_mean(volume, {m}) / ts_mean(volume, {n})"
-    if template_type == "range_position":
+    if template_type == "ts_scaled_price":
         return f"ts_scale({price_field}, {n})"
-    if template_type == "time_series_rank":
+    if template_type == "ts_rank_price":
         return f"ts_rank({price_field}, {n})"
+    if template_type == "ts_zscore_price":
+        return f"ts_zscore({price_field}, {n})"
+    if template_type == "price_av_diff":
+        return f"ts_av_diff({price_field}, {n})"
     if template_type == "short_long_trend":
         short_window, long_window = trend_windows(n, m)
         return f"ts_mean({price_field}, {short_window}) / ts_mean({price_field}, {long_window}) - 1"
+    if template_type == "volatility_change":
+        return f"ts_delta(ts_std_dev({price_field}, {m}), {n})"
     if template_type == "volume_surprise":
         return f"(volume - ts_mean(volume, {n})) / ts_std_dev(volume, {m})"
+    if template_type == "volume_av_diff":
+        return f"ts_av_diff(volume, {n})"
+    if template_type == "smoothed_volume_surprise":
+        return f"ts_decay_linear(ts_av_diff(volume, {n}), {smoothing_window})"
     if template_type == "price_volume_momentum":
         return f"ts_delta({price_field}, {n}) * (volume / ts_mean(volume, {m}))"
     if template_type == "price_volume_reversal":
         return f"ts_delta({price_field}, {n}) * (volume / ts_mean(volume, {m}))"
     if template_type == "smoothed_price_momentum":
-        return f"ts_mean(ts_delta({price_field}, {n}), {smoothing_window}) / ts_std_dev({price_field}, {m})"
+        return f"ts_decay_linear(ts_delta({price_field}, {n}), {smoothing_window}) / ts_std_dev({price_field}, {m})"
+    if template_type == "smoothed_price_volume":
+        return f"ts_decay_linear(ts_delta({price_field}, {n}), {smoothing_window}) * (volume / ts_mean(volume, {m}))"
     if template_type == "smoothed_price_volume_reversal":
-        return f"ts_mean(ts_delta({price_field}, {n}), {smoothing_window}) * (volume / ts_mean(volume, {m}))"
+        return f"ts_decay_linear(ts_delta({price_field}, {n}), {smoothing_window}) * (volume / ts_mean(volume, {m}))"
+    if template_type == "volume_weighted_reversal":
+        return f"ts_delta({price_field}, {n}) * ts_zscore(volume, {m})"
+    if template_type == "price_volume_corr":
+        return f"ts_corr({price_field}, volume, {n})"
+    if template_type == "price_volume_corr_change":
+        return f"ts_delta(ts_corr({price_field}, volume, {m}), {n})"
     if template_type == "high_low_momentum_spread":
         return f"ts_delta(high, {n}) - ts_delta(low, {n})"
     if template_type == "close_to_vwap_momentum":
         return f"ts_delta(close, {n}) - ts_delta(vwap, {n})"
     if template_type == "intraday_position":
         return "(close - open) / (high - low)"
+    if template_type == "intraday_vwap_position":
+        return "(close - vwap) / (high - low)"
+    if template_type == "argmax_momentum":
+        return f"ts_arg_max({price_field}, {n})"
+    if template_type == "argmin_reversal":
+        return f"ts_arg_min({price_field}, {n})"
+    if template_type == "hump_smoothed_momentum":
+        return f"hump(ts_delta({price_field}, {n}), hump=0.01)"
 
     raise ValueError(f"Unknown template_type: {template_type}")
 
@@ -710,18 +786,33 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
     elif template_type == "volume_ratio_inverse":
         alpha_name = f"{direction_prefix}vol_ratio_inv_{m}_{n}_{transform}"
         uses = f"Uses the inverse ratio of {m}-day average volume to {n}-day average volume"
-    elif template_type == "range_position":
-        alpha_name = f"{direction_prefix}range_scale_{price_field}_{n}_{transform}"
-        uses = f"Uses the time-series scaled position of {price_field} over a {n}-day lookback"
-    elif template_type == "time_series_rank":
+    elif template_type == "ts_scaled_price":
+        alpha_name = f"{direction_prefix}ts_scale_{price_field}_{n}_{transform}"
+        uses = f"Uses the {n}-day time-series scaled position of {price_field}"
+    elif template_type == "ts_rank_price":
         alpha_name = f"{direction_prefix}ts_rank_{price_field}_{n}_{transform}"
         uses = f"Uses the {n}-day time-series rank of {price_field}"
+    elif template_type == "ts_zscore_price":
+        alpha_name = f"{direction_prefix}ts_z_{price_field}_{n}_{transform}"
+        uses = f"Uses the {n}-day time-series z-score of {price_field}"
+    elif template_type == "price_av_diff":
+        alpha_name = f"{direction_prefix}avdiff_{price_field}_{n}_{transform}"
+        uses = f"Uses {price_field} minus its {n}-day average via ts_av_diff"
     elif template_type == "short_long_trend":
         alpha_name = f"{direction_prefix}trend_{price_field}_{short_window}_{long_window}_{transform}"
         uses = f"Uses the ratio of {short_window}-day to {long_window}-day average {price_field} levels"
+    elif template_type == "volatility_change":
+        alpha_name = f"{direction_prefix}vol_chg_{price_field}_{n}_{m}_{transform}"
+        uses = f"Uses the {n}-day change in {m}-day {price_field} volatility"
     elif template_type == "volume_surprise":
         alpha_name = f"{direction_prefix}vol_surprise_{n}_{m}_{transform}"
         uses = f"Uses current volume versus its {n}-day average, normalised by {m}-day volume volatility"
+    elif template_type == "volume_av_diff":
+        alpha_name = f"{direction_prefix}vol_avdiff_{n}_{transform}"
+        uses = f"Uses volume minus its {n}-day average via ts_av_diff"
+    elif template_type == "smoothed_volume_surprise":
+        alpha_name = f"{direction_prefix}vol_smooth_{n}_s{smoothing_window}_{transform}"
+        uses = f"Uses a {smoothing_window}-day decayed version of volume's {n}-day average difference"
     elif template_type == "price_volume_momentum":
         alpha_name = f"{direction_prefix}pv_mom_{price_field}_{n}_{m}_{transform}"
         uses = f"Uses {n}-day {price_field} price change scaled by relative volume versus its {m}-day average"
@@ -730,10 +821,22 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
         uses = f"Uses a {n}-day {price_field} price-change signal scaled by relative volume versus its {m}-day average, labelled as a reversal hypothesis"
     elif template_type == "smoothed_price_momentum":
         alpha_name = f"{direction_prefix}mom_smooth_{price_field}_{n}_{m}_s{smoothing_window}_{transform}"
-        uses = f"Uses a {smoothing_window}-day smoothed {n}-day {price_field} price change normalised by {m}-day {price_field} volatility"
+        uses = f"Uses a {smoothing_window}-day linearly decayed {n}-day {price_field} price change normalised by {m}-day {price_field} volatility"
+    elif template_type == "smoothed_price_volume":
+        alpha_name = f"{direction_prefix}pv_smooth_{price_field}_{n}_{m}_s{smoothing_window}_{transform}"
+        uses = f"Uses a {smoothing_window}-day linearly decayed {n}-day {price_field} price change scaled by relative volume versus its {m}-day average"
     elif template_type == "smoothed_price_volume_reversal":
         alpha_name = f"{direction_prefix}pv_rev_smooth_{price_field}_{n}_{m}_s{smoothing_window}_{transform}"
-        uses = f"Uses a {smoothing_window}-day smoothed {n}-day {price_field} price-change signal scaled by relative volume versus its {m}-day average, labelled as a reversal hypothesis"
+        uses = f"Uses a {smoothing_window}-day linearly decayed {n}-day {price_field} price-change signal scaled by relative volume versus its {m}-day average, labelled as a reversal hypothesis"
+    elif template_type == "volume_weighted_reversal":
+        alpha_name = f"{direction_prefix}vol_w_rev_{price_field}_{n}_{m}_{transform}"
+        uses = f"Uses a {n}-day {price_field} price-change signal multiplied by the {m}-day volume z-score, labelled as a reversal hypothesis"
+    elif template_type == "price_volume_corr":
+        alpha_name = f"{direction_prefix}pv_corr_{price_field}_vol_{n}_{transform}"
+        uses = f"Uses the rolling correlation between {price_field} and volume over {n} days"
+    elif template_type == "price_volume_corr_change":
+        alpha_name = f"{direction_prefix}pv_corr_chg_{price_field}_{n}_{m}_{transform}"
+        uses = f"Uses the {n}-day change in {m}-day rolling correlation between {price_field} and volume"
     elif template_type == "high_low_momentum_spread":
         alpha_name = f"{direction_prefix}hl_spread_{n}_{transform}"
         uses = f"Uses the spread between high-price momentum and low-price momentum over a {n}-day lookback"
@@ -743,6 +846,18 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
     elif template_type == "intraday_position":
         alpha_name = f"{direction_prefix}intraday_pos_{transform}"
         uses = "Uses where the close sits relative to the open inside the daily high-low range"
+    elif template_type == "intraday_vwap_position":
+        alpha_name = f"{direction_prefix}intraday_vwap_pos_{transform}"
+        uses = "Uses where the close sits relative to VWAP inside the daily high-low range"
+    elif template_type == "argmax_momentum":
+        alpha_name = f"{direction_prefix}argmax_mom_{price_field}_{n}_{transform}"
+        uses = f"Uses the recency of the {n}-day maximum in {price_field}, with recent highs treated as momentum"
+    elif template_type == "argmin_reversal":
+        alpha_name = f"{direction_prefix}argmin_rev_{price_field}_{n}_{transform}"
+        uses = f"Uses the recency of the {n}-day minimum in {price_field}, labelled as a reversion hypothesis"
+    elif template_type == "hump_smoothed_momentum":
+        alpha_name = f"{direction_prefix}hump_mom_{price_field}_{n}_{transform}"
+        uses = f"Uses a hump-smoothed {n}-day {price_field} price-change signal"
     else:
         raise ValueError(f"Unknown template_type: {template_type}")
 
@@ -762,11 +877,30 @@ def build_alpha_metadata(params, universe=FIXED_UNIVERSE):
 
 def infer_alpha_category(template_type, direction):
     """Return the BRAIN category implied by the template and final sign."""
-    if template_type in {"price_momentum", "price_reversion", "smoothed_price_momentum"}:
+    directional_price_templates = {
+        "price_momentum",
+        "price_reversion",
+        "ts_scaled_price",
+        "ts_rank_price",
+        "ts_zscore_price",
+        "price_av_diff",
+        "smoothed_price_momentum",
+        "volatility_change",
+        "hump_smoothed_momentum",
+    }
+    if template_type in directional_price_templates:
         return "price momentum" if direction == 1 else "price reversion"
-    if template_type in {"low_volatility", "intraday_position"}:
+    if template_type in {"low_volatility", "intraday_position", "intraday_vwap_position", "argmin_reversal"}:
         return "price reversion"
-    if template_type in {"price_volume_momentum", "price_volume_reversal", "smoothed_price_volume_reversal"}:
+    if template_type in {
+        "price_volume_momentum",
+        "price_volume_reversal",
+        "smoothed_price_volume",
+        "smoothed_price_volume_reversal",
+        "volume_weighted_reversal",
+        "price_volume_corr",
+        "price_volume_corr_change",
+    }:
         return "price volume"
     return TEMPLATE_CATEGORY_MAP[template_type]
 

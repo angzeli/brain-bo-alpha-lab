@@ -26,6 +26,8 @@ LEGACY_TEMPLATE_MAP = {
     "reversal": "price_reversion",
     "volume": "volume_ratio",
     "volatility": "low_volatility",
+    "range_position": "ts_scaled_price",
+    "time_series_rank": "ts_rank_price",
 }
 
 
